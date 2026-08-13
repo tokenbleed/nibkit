@@ -1,90 +1,95 @@
 # nibkit
 
-Parse compiled iOS/macOS Interface Builder archives (`.nib`, `.storyboardc`)
-for reverse engineering and pentest. Reads the `UINibEncoder` "NIBArchive"
-binary format (magic `NIBArchive`, formatVersion 1, coderVersion 9-11+) that
-current Xcode produces for iOS apps. Single static binary, no dependencies,
-pure Go.
+A modern, pentest-focused decompiler for compiled iOS/macOS Interface Builder
+archives (`.nib`, `.storyboardc`, `.app`). Parses the `NIBArchive` binary format
+(coderVersion 9 and 10, every Xcode since Xcode 13) and recovers object
+structure, wiring, custom classes, segues, and string values. Single static Go
+binary, zero runtime dependencies.
 
-## Why
+## why
 
-Compiled nibs are opaque binary. The dominant free tool, `xibdump`, hard-pins
-the old `coderVersion == 9` and throws on modern nibs (Xcode 13+ ship
-coderVersion 10), and has no way to extract selectors, outlets, or strings in a
-pipeline-friendly form. `nibkit` parses the current format and is built around
-the things you actually want during an engagement:
+`strings` gives you tokens. nibkit gives you **relationships**: which control
+fires which selector, which view controller owns an outlet, which class a
+storyboard scene is bound to, and what runtime attributes a developer hid on a
+control. That is the attack surface `strings` cannot show.
 
-- the `@IBAction` selectors a view controller responds to
-- the `@IBOutlet` names and their target classes
-- runtime attributes (a classic place to hide flags / keys / feature toggles)
-- every string value, for grepping after endpoints and secrets
+## install
 
-## Install
+    go install nibkit@latest      # or: go build -o nibkit .
 
-```
-go install nibkit@latest        # after publish
-```
+Symlink the binary onto your PATH (`~/.local/bin/nibkit`).
 
-Build from source:
+## usage
 
-```
-git clone <repo> && cd nibkit
-go build -o nibkit .
-cp nibkit /usr/local/bin/       # or anywhere on PATH
-```
+    nibkit [command] <path...> [flags]
 
-## Commands
+    commands (default = object tree with header):
+      wiring      outlets, @IBAction selectors, runtime attributes
+      strings     all string values, one per line (source<TAB>value)
+      classes     custom (UIClassSwapper) classes with base + scene id
+      segues      storyboard segue / navigation graph
+      info        header counts only
 
-```
-nibkit info     <path>   header + table counts (cheap fingerprint)
-nibkit dump     <path>   tree view of the archived object graph
-nibkit json     <path>   the object graph as JSON (pipe into jq)
-nibkit strings  <path>   all string values, class names, keys
-nibkit wiring   <path>   outlet + action connections (selectors, sources, targets)
-```
+    input:
+      a .nib file, a .nib/.storyboardc/.app bundle, or any directory
+      (recursively walked for NIBArchive .nib files). Multiple paths aggregate.
 
-`<path>` is a flat compiled `.nib` file, or a `.storyboardc` / `.nib` bundle
-directory (each scene nib is parsed in turn).
+    flags:
+      -J, --json    JSON output (single object for one blob, array for many)
+          --frida   generate Frida @IBAction hook stubs (wiring only)
+      -V, --version print version
+      -h, --help    show help
 
-## Example
+    aliases (older CLI, still work): dump/tree, info, json
 
-```
-$ nibkit wiring Action.storyboardc
-TYPE    SELECTOR / OUTLET       SOURCE                       DESTINATION
-OUTLET  myButton                IBFilesOwner(UIProxyObject)  UIButton
-OUTLET  nameField               IBFilesOwner(UIProxyObject)  UITextField
-OUTLET  view                    IBFilesOwner(UIProxyObject)  UIView
-ACTION  didTapButton:withEvent: UIButton                     UIProxyObject  [touchUpInside]
+## examples
 
-$ nibkit strings App.app/Base.lproj/Main.storyboardc | rg -i 'url|key|secret|http'
-```
+    nibkit Foo.nib                          # tree + header
+    nibkit wiring Foo.storyboardc           # outlets, actions, runtime attrs
+    nibkit wiring --frida Foo.storyboardc   # ready-to-run Frida hooks
+    nibkit strings Foo.app | grep -i http   # app-wide string sweep
+    nibkit classes Foo.app                  # every custom IB class
+    nibkit segues Foo.app                   # navigation graph
+    nibkit -J wiring Foo.app | jq '.[] | .actions'
 
-## Format notes
+## what each command gives you
 
-NIBArchive is a 50-byte header (`NIBArchive` magic + formatVersion +
-coderVersion + four count/offset table pairs) followed by four tables: keys,
-class names, objects, and coder values. Integers are a 7-bit little-endian
-varint whose high bit marks the terminal byte. Geometry payloads (UIBounds,
-UICenter, ...) are a 1-byte tag followed by little-endian doubles. nibkit
-resolves object references into a tree, expanding each object once and emitting
-back-references for repeats.
+- **tree (default)**: full object graph with decoded geometry, bools, and custom
+  class annotations (`UIClassSwapper ... <MyViewController>`).
+- **wiring**: the high-value command. Tables outlets (`myButton ->
+  MyViewController`), `@IBAction` selectors with decoded control events
+  (`didTapButton:withEvent: [touchUpInside]`), and developer-set runtime
+  attributes (`secretTag = admin-flag`) where keys, flags, and hidden URLs live.
+- **classes**: every `UIClassSwapper` resolved to its real class, base class,
+  and storyboard scene id. Surfaces Swift-mangled names directly.
+- **segues**: every `UIStoryboardSegueTemplate` with kind (embed/show/push/...),
+  source view controller, destination scene id, and prepare/perform selector.
+- **strings**: every string value (class names, key paths, object bytes) for
+  grepping.
 
-Value-type table: 0=int8, 1=int16, 2=int32, 3=int64, 4=true, 5=false, 6=float,
-7=double, 8=data, 9=nil, 10=object-ref(u32).
+## frida codegen
 
-Decompilation is structurally lossy: Interface Builder discards editing
-metadata (constraint equations, layout-guide math, the original document
-object IDs) at compile time. nibkit recovers the runtime object graph, the
-wiring, and the strings, not a round-trippable XIB.
+`nibkit wiring --frida` emits a Frida script with one `Interceptor.attach` stub
+per `@IBAction`, targeting the implementing class. Storyboard placeholder
+destinations are auto-resolved to the scene's view controller when the class is
+unique; ambiguous cases are emitted as commented TODOs with candidate classes
+listed at the top.
 
-## Scope
+    frida -U -f com.example.app -l hooks.js
 
-- Modern iOS `NIBArchive` (UINibEncoder) format, the current default.
-- `.storyboardc` / `.nib` bundle directories.
+## format notes
 
-Not (yet) handled: legacy NeXTSTEP `.nib`, and macOS `NSKeyedArchive`
-(`.nib` archives that are actually binary plists). The latter is rare on iOS.
+NIBArchive binary layout: 50-byte header (`NIBArchive` magic + formatVersion 1 +
+coderVersion 9/10 + four count/offset pairs for objects, keys, values, class
+names). Integers are 7-bit little-endian varints with the high bit set on the
+terminal byte. Coder value types: int8/16/32/64, true, false, float, double,
+data, nil, object-ref. Geometry DATA payloads are a 1-byte tag followed by N
+little-endian doubles.
 
-## License
+Decompilation is inherently lossy: Interface Builder discards authoring metadata
+at compile time, so nibkit recovers layout, structure, wiring, and string values,
+not a round-trippable `.xib`.
+
+## license
 
 MIT.

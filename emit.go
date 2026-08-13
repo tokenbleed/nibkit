@@ -7,16 +7,112 @@ import (
 	"strings"
 )
 
-// ---------- dump (tree) ----------
+// ==================== shared table helpers ====================
+
+// objProps maps an object's coder values to their keyed value structs.
+func (a *Archive) objProps(idx int) map[string]value {
+	m := map[string]value{}
+	if idx < 0 || idx >= len(a.Objects) {
+		return m
+	}
+	oe := a.Objects[idx]
+	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
+		v := a.Values[i]
+		key := "?"
+		if v.KeyIdx >= 0 && v.KeyIdx < len(a.Keys) {
+			key = a.Keys[v.KeyIdx]
+		}
+		m[key] = v
+	}
+	return m
+}
+
+// objString follows an NSString object reference and returns its NS.bytes text.
+func (a *Archive) objString(idx int) string {
+	for k, v := range a.objProps(idx) {
+		if v.Type != tData || !strBytes[k] {
+			continue
+		}
+		if b, ok := v.Payload.([]byte); ok {
+			return cutNull(string(b))
+		}
+	}
+	return ""
+}
+
+// objStringProp reads a named prop that holds an NSString object reference.
+func (a *Archive) objStringProp(idx int, key string) string {
+	v, ok := a.objProps(idx)[key]
+	if !ok || v.Type != tObj {
+		return ""
+	}
+	return a.objString(int(v.Payload.(uint32)))
+}
+
+// arrayRefs returns the tObj element indices of an NSArray object.
+func (a *Archive) arrayRefs(idx int) []int {
+	var out []int
+	if idx < 0 || idx >= len(a.Objects) {
+		return out
+	}
+	oe := a.Objects[idx]
+	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
+		if v := a.Values[i]; v.Type == tObj {
+			out = append(out, int(v.Payload.(uint32)))
+		}
+	}
+	return out
+}
+
+// classLabel resolves an object index to a human label: the real custom class
+// for a UIClassSwapper, the proxy identifier for a UIProxyObject, else the class.
+func (a *Archive) classLabel(idx int) string {
+	switch a.className(idx) {
+	case "UIClassSwapper":
+		if n := a.objStringProp(idx, "UIClassName"); n != "" {
+			return n
+		}
+	case "UIProxyObject":
+		if id := a.objStringProp(idx, "UIProxiedObjectIdentifier"); id != "" {
+			return id + "(proxy)"
+		}
+	}
+	return a.className(idx)
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// scalarString renders a coder value that may be a scalar or an object ref.
+func (a *Archive) scalarString(key string, v value) string {
+	if v.Type == tObj {
+		ref := int(v.Payload.(uint32))
+		if s := a.objString(ref); s != "" {
+			return s
+		}
+		return "<" + a.className(ref) + ">"
+	}
+	return fmtScalar(decodeValue(key, v.Type, v.Payload))
+}
+
+// ==================== dump (tree) ====================
 
 func (a *Archive) printTree(root interface{}, indent int) {
 	pad := strings.Repeat("  ", indent)
 	switch v := root.(type) {
 	case *node:
 		extra := ""
-		if cl := a.nodeStringProp(v, "UICustomClass"); cl != "" {
-			extra = "  <" + cl + ">"
-		} else if cl := a.nodeStringProp(v, "NSClassName"); cl != "" {
+		if cl := firstNonEmpty(
+			a.nodeStringProp(v, "UIClassName"),
+			a.nodeStringProp(v, "UICustomClass"),
+			a.nodeStringProp(v, "NSClassName"),
+		); cl != "" && cl != v.Class {
 			extra = "  <" + cl + ">"
 		}
 		fmt.Printf("%s%s (#%d)%s\n", pad, v.Class, v.Idx, extra)
@@ -53,13 +149,14 @@ func nodeString(n *node) string {
 	return ""
 }
 
-// nodeStringProp finds a string-valued NSString property on a node.
+// nodeStringProp finds a string-valued NSString property on a built graph node.
 func (a *Archive) nodeStringProp(n *node, key string) string {
 	for _, p := range n.Props {
-		if p.Key == key {
-			if sub, ok := p.Value.(*node); ok {
-				return nodeString(sub)
-			}
+		if p.Key != key {
+			continue
+		}
+		if sub, ok := p.Value.(*node); ok {
+			return nodeString(sub)
 		}
 	}
 	return ""
@@ -93,9 +190,12 @@ func fmtScalar(v interface{}) string {
 	}
 }
 
-// ---------- strings ----------
+// ==================== strings ====================
 
-type strItem struct{ Source, Value string }
+type strItem struct {
+	Source string `json:"source"`
+	Value  string `json:"value"`
+}
 
 func (a *Archive) collectStrings() []strItem {
 	var out []strItem
@@ -128,7 +228,7 @@ func (a *Archive) collectStrings() []strItem {
 	return out
 }
 
-// ---------- wiring (outlets + actions) ----------
+// ==================== wiring (outlets + actions) ====================
 
 var eventBits = map[int]string{
 	1 << 0:  "touchDown",
@@ -162,46 +262,12 @@ func eventName(mask int) string {
 	return fmt.Sprintf("0x%x", mask)
 }
 
-// objProps maps a connection object's keys to their values.
-func (a *Archive) objProps(idx int) map[string]value {
-	m := map[string]value{}
-	if idx < 0 || idx >= len(a.Objects) {
-		return m
-	}
-	oe := a.Objects[idx]
-	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
-		v := a.Values[i]
-		key := "?"
-		if v.KeyIdx >= 0 && v.KeyIdx < len(a.Keys) {
-			key = a.Keys[v.KeyIdx]
-		}
-		m[key] = v
-	}
-	return m
-}
-
-// objString returns the NS.bytes text of an NSString-typed object.
-func (a *Archive) objString(idx int) string {
-	for k, v := range a.objProps(idx) {
-		if v.Type == tData && strBytes[k] {
-			return cutNull(string(v.Payload.([]byte)))
-		}
-	}
-	return ""
-}
-
-func (a *Archive) sourceLabel(idx int) string {
-	if v, ok := a.objProps(idx)["UIProxiedObjectIdentifier"]; ok && v.Type == tObj {
-		if ident := a.objString(int(v.Payload.(uint32))); ident != "" {
-			return ident + "(" + a.className(idx) + ")"
-		}
-	}
-	return a.className(idx)
-}
-
 type conn struct {
-	Kind, Name, Source, Destination string
-	Event                           string
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Event       string `json:"event,omitempty"`
 }
 
 func (a *Archive) connections() []conn {
@@ -220,10 +286,10 @@ func (a *Archive) connections() []conn {
 			c.Name = a.objString(int(v.Payload.(uint32)))
 		}
 		if v, ok := p["UISource"]; ok && v.Type == tObj {
-			c.Source = a.sourceLabel(int(v.Payload.(uint32)))
+			c.Source = a.classLabel(int(v.Payload.(uint32)))
 		}
 		if v, ok := p["UIDestination"]; ok && v.Type == tObj {
-			c.Destination = a.className(int(v.Payload.(uint32)))
+			c.Destination = a.classLabel(int(v.Payload.(uint32)))
 		}
 		if c.Kind == "action" {
 			if v, ok := p["UIEventMask"]; ok {
@@ -238,4 +304,164 @@ func (a *Archive) connections() []conn {
 		out = append(out, c)
 	}
 	return out
+}
+
+// ==================== runtime attributes ====================
+
+type runtimeAttr struct {
+	Object  string `json:"object"`
+	KeyPath string `json:"keyPath"`
+	Value   string `json:"value"`
+}
+
+func (a *Archive) runtimeAttributes() []runtimeAttr {
+	var out []runtimeAttr
+	for i := range a.Objects {
+		if a.className(i) != "UINibKeyValuePair" {
+			continue
+		}
+		p := a.objProps(i)
+		kp := a.objStringProp(i, "UIKeyPath")
+		if kp == "" {
+			continue
+		}
+		owner := "?"
+		if v, ok := p["UIObject"]; ok && v.Type == tObj {
+			owner = a.classLabel(int(v.Payload.(uint32)))
+		}
+		val := ""
+		if v, ok := p["UIValue"]; ok {
+			val = a.scalarString("UIValue", v)
+		}
+		out = append(out, runtimeAttr{Object: owner, KeyPath: kp, Value: val})
+	}
+	return out
+}
+
+// ==================== custom classes ====================
+
+type customClass struct {
+	Class   string `json:"class"`
+	Base    string `json:"base"`
+	SceneID string `json:"sceneID,omitempty"`
+	Module  string `json:"module,omitempty"`
+}
+
+func (a *Archive) customClasses() []customClass {
+	seen := map[string]bool{}
+	var out []customClass
+	for i := range a.Objects {
+		if a.className(i) != "UIClassSwapper" {
+			continue
+		}
+		name := a.objStringProp(i, "UIClassName")
+		base := a.objStringProp(i, "UIOriginalClassName")
+		if name == "" || name == base || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, customClass{
+			Class:   name,
+			Base:    base,
+			SceneID: a.objStringProp(i, "UIStoryboardIdentifier"),
+			Module:  a.objStringProp(i, "UICustomModule"),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Class < out[j].Class })
+	return out
+}
+
+// ==================== segues (storyboard navigation) ====================
+
+type segue struct {
+	SourceClass string            `json:"sourceClass"`
+	SourceID    string            `json:"sourceSceneID,omitempty"`
+	Kind        string            `json:"kind"`
+	DestID      string            `json:"destinationID"`
+	Identifier  string            `json:"identifier,omitempty"`
+	Selector    string            `json:"selector,omitempty"`
+	CustomClass string            `json:"customClass,omitempty"`
+	Details     map[string]string `json:"details,omitempty"`
+}
+
+func segueKind(cls string) string {
+	switch {
+	case strings.Contains(cls, "Embed"):
+		return "embed"
+	case strings.Contains(cls, "Relationship"):
+		return "relationship"
+	case strings.Contains(cls, "Push"):
+		return "push"
+	case strings.Contains(cls, "Modal"):
+		return "modal"
+	case strings.Contains(cls, "Popover"):
+		return "popover"
+	case strings.Contains(cls, "Show"):
+		return "show"
+	case strings.Contains(cls, "Custom"):
+		return "custom"
+	default:
+		return strings.TrimPrefix(strings.TrimPrefix(cls, "UIStoryboard"), "UI")
+	}
+}
+
+func (a *Archive) segues() []segue {
+	var out []segue
+	for i := range a.Objects {
+		if a.className(i) != "UIClassSwapper" {
+			continue
+		}
+		v, ok := a.objProps(i)["UIStoryboardSegueTemplates"]
+		if !ok || v.Type != tObj {
+			continue
+		}
+		srcClass := a.objStringProp(i, "UIClassName")
+		srcID := a.objStringProp(i, "UIStoryboardIdentifier")
+		for _, sIdx := range a.arrayRefs(int(v.Payload.(uint32))) {
+			out = append(out, a.extractSegue(srcClass, srcID, sIdx))
+		}
+	}
+	return out
+}
+
+func (a *Archive) extractSegue(srcClass, srcID string, sIdx int) segue {
+	cls := a.className(sIdx)
+	s := segue{
+		SourceClass: srcClass,
+		SourceID:    srcID,
+		Kind:        segueKind(cls),
+		DestID:      a.objStringProp(sIdx, "UIDestinationViewControllerIdentifier"),
+	}
+	details := map[string]string{}
+	for k, v := range a.objProps(sIdx) {
+		if v.Type != tObj {
+			continue
+		}
+		val := a.objString(int(v.Payload.(uint32)))
+		if val == "" {
+			continue
+		}
+		switch k {
+		case "UIDestinationViewControllerIdentifier":
+			// already captured as DestID
+		case "UICustomPrepareForChildViewControllersSegueName", "UICustomSeguePerformSelectorName":
+			if s.Selector == "" {
+				s.Selector = val
+			}
+		case "UIIdentifier", "UICustomIdentifier":
+			if s.Identifier == "" {
+				s.Identifier = val
+			}
+		case "UISegueClassName", "UICustomClass":
+			if s.CustomClass == "" {
+				s.CustomClass = val
+			}
+		default:
+			details[k] = val
+		}
+	}
+	if len(details) > 0 {
+		s.Details = details
+	}
+	return s
 }
