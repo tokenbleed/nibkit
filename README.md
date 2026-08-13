@@ -1,9 +1,10 @@
 # nibkit
 
-Parse compiled iOS/macOS Interface Builder archives (`.nib`, `.storyboardc`) for
-reverse engineering and pentest. Reads the `UINibEncoder` "NIBArchive" binary
-format (magic `NIBArchive`, formatVersion 1, coderVersion 9-11+) that current
-Xcode produces for iOS apps. Pure Python stdlib, no dependencies.
+Parse compiled iOS/macOS Interface Builder archives (`.nib`, `.storyboardc`)
+for reverse engineering and pentest. Reads the `UINibEncoder` "NIBArchive"
+binary format (magic `NIBArchive`, formatVersion 1, coderVersion 9-11+) that
+current Xcode produces for iOS apps. Single static binary, no dependencies,
+pure Go.
 
 ## Why
 
@@ -21,13 +22,15 @@ the things you actually want during an engagement:
 ## Install
 
 ```
-uv tool install nibkit        # or: pipx install nibkit
+go install nibkit@latest        # after publish
 ```
 
-Local dev / single run without installing:
+Build from source:
 
 ```
-python3 nibkit.py <command> <path>
+git clone <repo> && cd nibkit
+go build -o nibkit .
+cp nibkit /usr/local/bin/       # or anywhere on PATH
 ```
 
 ## Commands
@@ -65,6 +68,9 @@ varint whose high bit marks the terminal byte. Geometry payloads (UIBounds,
 UICenter, ...) are a 1-byte tag followed by little-endian doubles. nibkit
 resolves object references into a tree, expanding each object once and emitting
 back-references for repeats.
+
+Value-type table: 0=int8, 1=int16, 2=int32, 3=int64, 4=true, 5=false, 6=float,
+7=double, 8=data, 9=nil, 10=object-ref(u32).
 
 Decompilation is structurally lossy: Interface Builder discards editing
 metadata (constraint equations, layout-guide math, the original document

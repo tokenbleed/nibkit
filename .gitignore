@@ -1,7 +1,11 @@
-__pycache__/
-*.pyc
-*.egg-info/
-dist/
-build/
-.venv/
+# compiled binary (built locally; not shipped in the repo)
+/nibkit
+*.exe
+
+# go build cache
+*.test
+*.out
+vendor/
+
+# editor / os
 .DS_Store
