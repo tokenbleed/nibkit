@@ -332,6 +332,9 @@ func printSeguesText(arc *Archive) {
 			id = "-"
 		}
 		fmt.Printf("  %s %s %s %s %s\n", pad(s.Kind, 12), pad(s.SourceClass, 36), pad(s.DestID, 36), pad(id, 14), s.Selector)
+		for k, v := range s.Details {
+			fmt.Printf("    %s = %s\n", pad(k, 46), v)
+		}
 	}
 }
 
