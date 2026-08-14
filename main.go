@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const version = "1.0.0"
+const version = "1.2.0"
 
 type blob struct {
 	label string
@@ -60,7 +60,9 @@ func run(args []string) int {
 		blobs = append(blobs, bs...)
 	}
 	if len(blobs) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no NIBArchive .nib files found in input")
+		if len(c.paths) > 1 {
+			fmt.Fprintln(os.Stderr, "error: no NIBArchive .nib files found in input")
+		}
 		return 1
 	}
 
@@ -97,7 +99,14 @@ func run(args []string) int {
 // ==================== interactive mode ====================
 
 const banner = `nibkit ` + version + ` - NIBArchive decompiler (.nib / .storyboardc / .app / .ipa)
-.ipa files are extracted automatically. drop in a path and pick an action.`
+.ipa files are extracted automatically. drop in a path and pick an action.
+
+sample commands (this menu is optional; the CLI works directly):
+  nibkit wiring Foo.app              outlets + @IBAction selectors + runtime attrs
+  nibkit classes Foo.ipa             custom Interface Builder classes
+  nibkit segues --mermaid Foo.app    navigation graph as Mermaid
+  nibkit wiring --frida Foo.ipa      Frida hooks for @IBAction handlers
+  type 'help' anywhere for the full command list.`
 
 func isTerminal() bool {
 	// True isatty on both ends: TIOCGWINSZ fails with ENOTTY on pipes, files,
@@ -112,13 +121,17 @@ func runInteractive() int {
 	for {
 		fmt.Println()
 		fmt.Println("Path to a .ipa / .app / .storyboardc / .nib / directory")
-		fmt.Println("(drag one in, or blank to quit):")
+		fmt.Println("(drag one in, 'help' for commands, blank to quit):")
 		fmt.Print("> ")
-		path := cleanPath(readline(r))
-		if path == "" {
+		line := cleanPath(readline(r))
+		if line == "" {
 			return 0
 		}
-		blobs, cleanup, err := discover(path)
+		if isHelpWord(line) {
+			printHelp()
+			continue
+		}
+		blobs, cleanup, err := discover(line)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "  error:", err)
 			continue
@@ -141,60 +154,92 @@ func runInteractive() int {
 		}
 		fmt.Println()
 
+		// action loop: every action returns here, so any number of actions can
+		// run against the same bundle without re-answering prompts.
 		for {
 			fmt.Println()
 			printMenu()
 			fmt.Print("> ")
 			choice := strings.ToLower(readline(r))
+			if isHelpWord(choice) {
+				printHelp()
+				continue
+			}
 			if choice == "" || choice == "q" || choice == "quit" || choice == "exit" {
 				return 0
 			}
-			if !doAction(r, choice, blobs) {
-				continue
+			if choice == "b" || choice == "back" {
+				break // back to the path prompt
 			}
-			if !yesNo(r, "Run another action on this bundle? [Y/n]", true) {
-				break
-			}
-		}
-		if !yesNo(r, "Load a different file? [y/N]", false) {
-			return 0
+			doAction(r, choice, blobs)
 		}
 	}
 }
 
+func isHelpWord(s string) bool {
+	switch s {
+	case "help", "commands", "h", "?":
+		return true
+	}
+	return false
+}
+
+func printHelp() {
+	fmt.Println(`
+interactive actions (number or word):
+  1 tree      object graph with resolved classes
+  2 wiring    outlets + @IBAction selectors + runtime attributes
+  3 classes   custom Interface Builder classes
+  4 nav       segue + container navigation graph
+  5 frida     @IBAction hooks -> hooks.js
+  6 json      export structured data
+  7 mermaid   navigation graph as Mermaid (renders on GitHub)
+  b back      load a different file      q quit
+
+CLI commands (same features, scriptable):
+  nibkit [tree] <path>              object tree + header (aliases: dump)
+  nibkit info <path>                header counts only
+  nibkit wiring <path>              outlets/actions/runtime attrs
+  nibkit classes <path>             custom IB classes
+  nibkit segues <path>              navigation graph
+  nibkit all <path>                 classes + wiring + navigation
+  nibkit wiring --frida <path>      write Frida hook stubs to stdout
+  nibkit segues --mermaid <path>    Mermaid flowchart
+  nibkit -J <cmd> <path>            JSON (object per nib, array when many)
+paths: .ipa (auto-extracted) / .app / .storyboardc / .nib / directory
+flags: NIBKIT_PAGER / PAGER override the pager (cat disables).`)
+}
+
 func printMenu() {
-	fmt.Println(`actions:
+	fmt.Println(`actions (help = full command list, b = different file, q = quit):
   1  tree      object graph
   2  wiring    outlets + @IBAction selectors + runtime attributes
   3  classes   custom Interface Builder classes
   4  nav       segue + container navigation graph
   5  frida     @IBAction hooks -> hooks.js
   6  json      export structured data
-  7  mermaid   navigation graph as Mermaid (renders on GitHub)
-  q  quit`)
+  7  mermaid   navigation graph as Mermaid (renders on GitHub)`)
 }
 
-func doAction(r *bufio.Reader, choice string, blobs []blob) bool {
+func doAction(r *bufio.Reader, choice string, blobs []blob) {
 	switch choice {
-	case "1":
+	case "1", "tree", "dump":
 		emitText(blobs, "tree", false)
-	case "2":
+	case "2", "wiring":
 		emitText(blobs, "wiring", false)
-	case "3":
+	case "3", "classes":
 		emitText(blobs, "classes", false)
-	case "4":
+	case "4", "nav", "segues":
 		emitText(blobs, "segues", false)
-	case "5":
+	case "5", "frida":
 		writeFrida(blobs)
-	case "6":
+	case "6", "json":
 		emitJSON(blobs, "all", false)
-	case "7":
+	case "7", "mermaid":
 		emitMermaid(blobs)
 	default:
-		fmt.Fprintln(os.Stderr, "  unknown choice; pick 1-7 or q")
-		return false
+		fmt.Fprintln(os.Stderr, "  unknown action; pick 1-7, or help / b / q")
 	}
-	return true
 }
 
 func writeFrida(blobs []blob) {
@@ -226,15 +271,6 @@ func writeFrida(blobs []blob) {
 func readline(r *bufio.Reader) string {
 	s, _ := r.ReadString('\n')
 	return strings.TrimSpace(s)
-}
-
-func yesNo(r *bufio.Reader, msg string, def bool) bool {
-	fmt.Print(msg + " ")
-	s := strings.ToLower(readline(r))
-	if s == "" {
-		return def
-	}
-	return s[0] == 'y'
 }
 
 func cleanPath(s string) string {
@@ -428,10 +464,19 @@ func extractIPA(path string) (string, func(), error) {
 	}
 	cleanup := func() { os.RemoveAll(tmp) }
 	root := filepath.Clean(tmp)
+	// Zip-bomb guard: total decompressed budget = 4x the compressed size,
+	// floor 256MB. A small utility ipa (<64MB) never legitimately decompresses
+	// past ~5x its size, and big ipas get a proportional budget (a 500MB ipa
+	// gets 2GB). A 10MB zip inflating to gigabytes is rejected after 40MB.
+	var total int64
+	budget := int64(256 << 20)
+	if st, serr := os.Stat(path); serr == nil && st.Size()*4 > budget {
+		budget = st.Size() * 4
+	}
 	for _, f := range zr.File {
 		fp := filepath.Join(tmp, f.Name)
 		if !strings.HasPrefix(filepath.Clean(fp)+string(os.PathSeparator), root+string(os.PathSeparator)) {
-			continue
+			continue // zip-slip: escapes tmp
 		}
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(fp, 0o755)
@@ -455,15 +500,20 @@ func extractIPA(path string) (string, func(), error) {
 			cleanup()
 			return "", nil, err
 		}
-		if _, err := io.Copy(out, rc); err != nil {
-			rc.Close()
-			out.Close()
+		n, err := io.CopyN(out, rc, budget-total)
+		rc.Close()
+		out.Close()
+		total += n
+		if err == nil && total >= budget {
+			zr.Close()
+			cleanup()
+			return "", nil, fmt.Errorf("%s: zip decompresses beyond %dMB (zip bomb?)", filepath.Base(path), budget>>20)
+		}
+		if err != nil && err != io.EOF {
 			zr.Close()
 			cleanup()
 			return "", nil, err
 		}
-		rc.Close()
-		out.Close()
 	}
 	zr.Close()
 	matches, _ := filepath.Glob(filepath.Join(tmp, "Payload", "*.app"))
