@@ -99,7 +99,7 @@ const banner = `nibkit ` + version + ` - NIBArchive decompiler (.nib / .storyboa
 func isTerminal() bool {
 	// True isatty on both ends: TIOCGWINSZ fails with ENOTTY on pipes, files,
 	// and /dev/null (a char device), so the interactive menu only starts on a
-	// real console.
+	// real console (a winsize-less pty still counts).
 	return isTTY(os.Stdin.Fd()) && isTTY(os.Stdout.Fd())
 }
 
