@@ -76,6 +76,9 @@ func run(args []string) int {
 
 	if c.mermaidOut {
 		emitMermaid(blobs)
+		if hadErr {
+			return 1
+		}
 		return 0
 	}
 	if c.fridaOut {
@@ -86,7 +89,7 @@ func run(args []string) int {
 		return 0
 	}
 	if c.jsonOut {
-		return emitJSON(blobs, c.cmd)
+		return emitJSON(blobs, c.cmd, hadErr)
 	}
 	return emitText(blobs, c.cmd, hadErr)
 }
@@ -184,7 +187,7 @@ func doAction(r *bufio.Reader, choice string, blobs []blob) bool {
 	case "5":
 		writeFrida(blobs)
 	case "6":
-		emitJSON(blobs, "all")
+		emitJSON(blobs, "all", false)
 	case "7":
 		emitMermaid(blobs)
 	default:
@@ -712,7 +715,7 @@ func printNavText(arc *Archive) {
 
 // ==================== JSON output ====================
 
-func emitJSON(blobs []blob, cmd string) int {
+func emitJSON(blobs []blob, cmd string, hadErr bool) int {
 	docs := make([]map[string]interface{}, 0, len(blobs))
 	for _, b := range blobs {
 		if b.err != nil {
@@ -758,6 +761,9 @@ func emitJSON(blobs []blob, cmd string) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(out)
+	if hadErr {
+		return 1 // corrupt blobs are embedded as {"error":...}; still signal failure
+	}
 	return 0
 }
 
