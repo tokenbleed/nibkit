@@ -10,6 +10,20 @@ fires which selector, which custom class backs which scene, how navigation
 flows, and what runtime attributes were set. That is the attack surface
 `strings` cannot show.
 
+## install
+
+Homebrew (macOS / Linux):
+
+    brew install tokenbleed/tap/nibkit
+
+Go toolchain (any platform Go builds on):
+
+    go install github.com/tokenbleed/nibkit@latest
+
+Or grab a prebuilt binary from the
+[releases](https://github.com/tokenbleed/nibkit/releases) page (darwin and
+linux, arm64 and amd64). Stdlib only: no runtime dependencies.
+
 ## usage
 
     nibkit [command] <path...> [flags]
@@ -68,6 +82,17 @@ For raw strings just run `strings -a` on the nib files.
 
     go build -trimpath -ldflags="-s -w" -o nibkit .   # ~2.4 MB static binary
     # cross-compile: GOOS/GOARCH (darwin/linux, arm64/amd64)
+
+## testing
+
+See [TESTING.md](TESTING.md) for the full copy-paste test suite (file types,
+commands, JSON, frida codegen, mermaid, error handling, terminal behavior)
+plus `go test -fuzz FuzzAll` for the native fuzz target that drives the whole
+pipeline against malformed archives.
+
+## license
+
+MIT. See [LICENSE](LICENSE).
 
 ## format notes
 
