@@ -108,14 +108,8 @@ https://github.com/tokenbleed/nibkit/releases/tag/v1.3.0[v1.3.0 release].
 |.ipa
 |supported |extracted automatically
 
-|pre-2012 keyedarchive nibs (binary plist, `UINibObjectsKey`)
-|supported |iOS apps from the NSKeyedArchiver era decode through the same commands
-
-|pre-2012 macOS nibs (`IB.objectdata`)
-|not supported |rejected with a clear one-line error
-
-|SwiftUI apps
-|nothing to parse |no nib files exist
+|pre-2012 nibs (binary plist / NSKeyedArchive)
+|supported |iOS (`UINibObjectsKey`) and macOS (`IB.objectdata`) nibs from the keyedarchive era decode through the same commands: outlets, actions, bindings, runtime attributes
 |===
 
 == Contact

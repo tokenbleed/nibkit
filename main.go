@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const version = "1.3.0"
+const version = "1.4.0"
 
 type blob struct {
 	label string
@@ -709,11 +709,11 @@ func printWiringText(arc *Archive) {
 			rows = append(rows, []string{"outlet", c.Name, c.Source, c.Destination})
 		}
 		for _, c := range actions {
-			ev := c.Event
-			if ev != "" {
-				c.Destination += " [" + ev + "]"
+			dest := c.Destination
+			if c.Kind == "action" && c.Event != "" {
+				dest += " [" + c.Event + "]"
 			}
-			rows = append(rows, []string{"action", c.Name, c.Source, c.Destination})
+			rows = append(rows, []string{c.Kind, c.Name, c.Source, dest})
 		}
 		renderTable([]string{"TYPE", "SELECTOR/OUTLET", "SOURCE", "DESTINATION"}, rows)
 	}

@@ -93,6 +93,10 @@ func (a *Archive) classLabel(idx int) string {
 		if id := a.objStringProp(idx, "UIProxiedObjectIdentifier"); id != "" {
 			return id + "(proxy)"
 		}
+	case "NSCustomObject", "NSCustomView", "NSClassSwapper":
+		if n := a.objStringProp(idx, "NSClassName"); n != "" {
+			return n
+		}
 	}
 	return a.className(idx)
 }
@@ -260,22 +264,41 @@ func (a *Archive) connections() []conn {
 	var out []conn
 	for i := range a.Objects {
 		name := a.className(i)
-		if name != "UIRuntimeOutletConnection" && name != "UIRuntimeEventConnection" {
+		if name != "UIRuntimeOutletConnection" && name != "UIRuntimeEventConnection" &&
+			name != "NSNibOutletConnector" && name != "NSNibControlConnector" &&
+			name != "NSNibBindingConnector" && name != "NSIBHelpConnector" {
 			continue
 		}
 		p := a.objProps(i)
 		c := conn{Kind: "outlet"}
-		if name == "UIRuntimeEventConnection" {
+		switch name {
+		case "UIRuntimeEventConnection", "NSNibControlConnector":
 			c.Kind = "action"
+		case "NSNibBindingConnector":
+			c.Kind = "binding"
+		case "NSIBHelpConnector":
+			c.Kind = "help"
 		}
+		// iOS keys are UILabel/UISource/UIDestination; macOS connectors use
+		// NSLabel/NSSource/NSDestination with identical meaning.
 		if v, ok := p["UILabel"]; ok && v.Type == tObj {
 			c.Name = a.objString(int(v.Payload.(uint32)))
 		}
-		if v, ok := p["UISource"]; ok && v.Type == tObj {
-			c.Source = a.classLabel(int(v.Payload.(uint32)))
+		if v, ok := p["NSLabel"]; ok && v.Type == tObj {
+			c.Name = a.objString(int(v.Payload.(uint32)))
 		}
-		if v, ok := p["UIDestination"]; ok && v.Type == tObj {
-			c.Destination = a.classLabel(int(v.Payload.(uint32)))
+		if v, ok := p["NSMarker"]; ok && v.Type == tObj && c.Name == "" {
+			c.Name = a.objString(int(v.Payload.(uint32)))
+		}
+		for _, key := range []string{"UISource", "NSSource"} {
+			if v, ok := p[key]; ok && v.Type == tObj {
+				c.Source = a.classLabel(int(v.Payload.(uint32)))
+			}
+		}
+		for _, key := range []string{"UIDestination", "NSDestination"} {
+			if v, ok := p[key]; ok && v.Type == tObj {
+				c.Destination = a.classLabel(int(v.Payload.(uint32)))
+			}
 		}
 		if c.Kind == "action" {
 			if v, ok := p["UIEventMask"]; ok {
@@ -303,25 +326,67 @@ type runtimeAttr struct {
 func (a *Archive) runtimeAttributes() []runtimeAttr {
 	var out []runtimeAttr
 	for i := range a.Objects {
-		if a.className(i) != "UINibKeyValuePair" {
-			continue
+		switch a.className(i) {
+		case "UINibKeyValuePair":
+			p := a.objProps(i)
+			kp := a.objStringProp(i, "UIKeyPath")
+			if kp == "" {
+				continue
+			}
+			owner := "?"
+			if v, ok := p["UIObject"]; ok && v.Type == tObj {
+				owner = a.classLabel(int(v.Payload.(uint32)))
+			}
+			val := ""
+			if v, ok := p["UIValue"]; ok {
+				val = a.scalarString("UIValue", v)
+			}
+			out = append(out, runtimeAttr{owner, kp, val})
+		case "NSIBUserDefinedRuntimeAttributesConnector":
+			// macOS legacy: parallel arrays of key paths and values on one object
+			p := a.objProps(i)
+			owner := "?"
+			if v, ok := p["NSObject"]; ok && v.Type == tObj {
+				owner = a.classLabel(int(v.Payload.(uint32)))
+			}
+			var kps, vals []int
+			if v, ok := p["NSKeyPaths"]; ok && v.Type == tObj {
+				kps = a.arrayRefs(int(v.Payload.(uint32)))
+			}
+			if v, ok := p["NSValues"]; ok && v.Type == tObj {
+				vals = a.arrayRefs(int(v.Payload.(uint32)))
+			}
+			for j, kIdx := range kps {
+				val := ""
+				if j < len(vals) {
+					val = a.objScalar(vals[j])
+				}
+				out = append(out, runtimeAttr{owner, a.objString(kIdx), val})
+			}
 		}
-		p := a.objProps(i)
-		kp := a.objStringProp(i, "UIKeyPath")
-		if kp == "" {
-			continue
-		}
-		owner := "?"
-		if v, ok := p["UIObject"]; ok && v.Type == tObj {
-			owner = a.classLabel(int(v.Payload.(uint32)))
-		}
-		val := ""
-		if v, ok := p["UIValue"]; ok {
-			val = a.scalarString("UIValue", v)
-		}
-		out = append(out, runtimeAttr{owner, kp, val})
 	}
 	return out
+}
+
+// objScalar renders an object index as a short scalar string: string bodies,
+// numbers and booleans, falling back to the class name.
+func (a *Archive) objScalar(idx int) string {
+	for k, v := range a.objProps(idx) {
+		if v.Type == tData {
+			if strBytes[k] {
+				if b, ok := v.Payload.([]byte); ok {
+					return cutNull(string(b))
+				}
+			}
+			continue
+		}
+		if v.Type != tObj {
+			if s := a.scalarString(k, v); s != "" {
+				return s
+			}
+		}
+	}
+	return a.className(idx)
 }
 
 // ==================== custom classes ====================
@@ -337,11 +402,23 @@ func (a *Archive) customClasses() []customClass {
 	seen := map[string]bool{}
 	var out []customClass
 	for i := range a.Objects {
-		if a.className(i) != "UIClassSwapper" {
+		var name, base string
+		switch a.className(i) {
+		case "UIClassSwapper":
+			name = a.objStringProp(i, "UIClassName")
+			base = a.objStringProp(i, "UIOriginalClassName")
+		case "NSCustomObject", "NSCustomView", "NSClassSwapper":
+			// macOS analog: the class name rides in NSClassName
+			name = a.objStringProp(i, "NSClassName")
+			if a.className(i) != "NSCustomObject" {
+				base = a.objStringProp(i, "NSOriginalClassName")
+			}
+			if a.className(i) == "NSCustomView" && base == "" {
+				base = "NSView"
+			}
+		default:
 			continue
 		}
-		name := a.objStringProp(i, "UIClassName")
-		base := a.objStringProp(i, "UIOriginalClassName")
 		if name == "" || name == base || seen[name] {
 			continue
 		}

@@ -193,13 +193,13 @@ func parseLegacy(buf []byte) *Archive {
 	}
 	uinib := false
 	for _, k := range topDict.keys {
-		if len(k) >= 5 && k[:5] == "UINib" {
+		if (len(k) >= 5 && k[:5] == "UINib") || k == "IB.objectdata" {
 			uinib = true
 			break
 		}
 	}
 	if !uinib {
-		panic(fmt.Errorf("legacy Interface Builder nib (IB.objectdata) not supported yet"))
+		panic(fmt.Errorf("keyedarchive plist but not a nib archive"))
 	}
 
 	a := &Archive{Keyed: true}
@@ -297,9 +297,18 @@ func parseLegacy(buf []byte) *Archive {
 				if k == "" || k == "$class" {
 					continue
 				}
-				if u, ok := p.decode(v.vals[i]).(lUID); ok {
-					emitVal(k, tObj, uint32(u.n+1))
-				} else {
+				switch cv := p.decode(v.vals[i]).(type) {
+				case lUID:
+					emitVal(k, tObj, uint32(cv.n+1))
+				case pArr:
+					for _, r := range cv.refs {
+						if u, ok := p.decode(r).(lUID); ok {
+							emitVal(k, tObj, uint32(u.n+1))
+						} else {
+							emitVal(k, tObj, uint32(slotFor(r)))
+						}
+					}
+				default:
 					emitVal(k, tObj, uint32(slotFor(v.vals[i])))
 				}
 			}
@@ -381,19 +390,25 @@ func parseLegacy(buf []byte) *Archive {
 				if k == "" || k == "$class" || k == "$classname" || k == "$classes" {
 					continue
 				}
-				switch p.decode(v.vals[i]).(type) {
+				switch cv := p.decode(v.vals[i]).(type) {
 				case lUID:
 					objRef(k, v.vals[i])
 				case bool:
-					if p.decode(v.vals[i]).(bool) {
+					if cv {
 						emitVal(k, tTrue, true)
 					} else {
 						emitVal(k, tFalse, false)
 					}
 				case int64:
-					intVal(k, p.decode(v.vals[i]).(int64))
+					intVal(k, cv)
 				case float64:
-					emitVal(k, tDouble, p.decode(v.vals[i]).(float64))
+					emitVal(k, tDouble, cv)
+				case pArr:
+					// archived NSArray: a dict with an NS.objects raw array; flatten
+					// to repeated values of the key, like NIBArchive does
+					for _, r := range cv.refs {
+						objRef(k, r)
+					}
 				default:
 					objRef(k, v.vals[i])
 				}
