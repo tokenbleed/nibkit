@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const version = "1.2.1"
+const version = "1.3.0"
 
 type blob struct {
 	label string
@@ -407,8 +407,8 @@ func discover(path string) ([]blob, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %v", path, err)
 		}
-		if len(data) < 10 || string(data[:10]) != magic {
-			return nil, nil, fmt.Errorf("%s: not a NIBArchive (magic mismatch)", path)
+		if !isNibData(data) {
+			return nil, nil, fmt.Errorf("%s: not a NIBArchive or keyedarchive nib", path)
 		}
 		return []blob{{label: filepath.Base(path), data: data}}, nil, nil
 	}
@@ -435,7 +435,7 @@ func walkDir(root string) ([]blob, error) {
 		if rerr != nil {
 			return nil
 		}
-		if len(data) < 10 || string(data[:10]) != magic {
+		if !isNibData(data) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
@@ -542,8 +542,20 @@ func splitWiring(arc *Archive) (outs, acts []conn, ra []runtimeAttr) {
 }
 
 func headerLine(label string, arc *Archive) string {
-	return fmt.Sprintf("# %s  (format %d, coder %d)  %d objs / %d vals / %d keys / %d classes",
-		label, arc.Major, arc.Minor, len(arc.Objects), len(arc.Values), len(arc.Keys), len(arc.Classes))
+	fmtKind := fmt.Sprintf("format %d, coder %d", arc.Major, arc.Minor)
+	if arc.Keyed {
+		fmtKind = "NSKeyedArchive (pre-2012)"
+	}
+	return fmt.Sprintf("# %s  (%s)  %d objs / %d vals / %d keys / %d classes",
+		label, fmtKind, len(arc.Objects), len(arc.Values), len(arc.Keys), len(arc.Classes))
+}
+
+// isNibData accepts both modern NIBArchive nibs and legacy keyedarchive nibs.
+func isNibData(data []byte) bool {
+	if len(data) >= 10 && string(data[:10]) == magic {
+		return true
+	}
+	return len(data) >= 8 && string(data[:6]) == "bplist"
 }
 
 // startPager pipes stdout through $PAGER (default less -RFX) when stdout is a

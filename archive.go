@@ -46,6 +46,7 @@ type value struct {
 // Archive is a parsed NIBArchive.
 type Archive struct {
 	Major, Minor int
+	Keyed        bool // pre-2012 NSKeyedArchive nib, synthesized via legacy.go
 	Keys         []string
 	Classes      []classEntry
 	Objects      []objectEntry
@@ -131,7 +132,11 @@ func parse(buf []byte) (a *Archive, err error) {
 			err = fmt.Errorf("%v", e)
 		}
 	}()
-	a = parseArchive(buf)
+	if len(buf) > 6 && string(buf[:6]) == "bplist" {
+		a = parseLegacy(buf)
+	} else {
+		a = parseArchive(buf)
+	}
 	return a, nil
 }
 
