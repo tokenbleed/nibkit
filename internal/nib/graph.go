@@ -1,4 +1,4 @@
-package main
+package nib
 
 import (
 	"encoding/binary"
@@ -94,7 +94,7 @@ func sanitize(s string) string {
 
 // buildGraph resolves object[idx] into a nested node tree, following OBJ refs.
 // A shared seen set expands each object once; later refs collapse to backref.
-func (a *Archive) buildGraph(idx int, seen map[int]bool) interface{} {
+func (a *Archive) BuildGraph(idx int, seen map[int]bool) interface{} {
 	if idx < 0 || idx >= len(a.Objects) {
 		return nil // dangling OBJ ref (fuzzed/corrupt archive)
 	}
@@ -117,7 +117,7 @@ func (a *Archive) buildGraph(idx int, seen map[int]bool) interface{} {
 		}
 		var val interface{}
 		if v.Type == tObj {
-			val = a.buildGraph(int(v.Payload.(uint32)), seen)
+			val = a.BuildGraph(int(v.Payload.(uint32)), seen)
 		} else {
 			val = decodeValue(key, v.Type, v.Payload)
 		}

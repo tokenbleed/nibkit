@@ -3,7 +3,8 @@
 Decompiler for compiled iOS/macOS interface files. Parses `.nib` and
 `.storyboardc` files (the format real apps ship), extracts object structure,
 wiring, custom classes, and the navigation graph. Single static Go binary,
-stdlib only, cross-compiles anywhere.
+stdlib only, cross-compiles anywhere. Also runs as an MCP server, so AI
+coding tools can decode nibs directly.
 
 `strings` gives you tokens. nibkit gives you *relationships*: which control
 fires which selector, which custom class backs which scene, how navigation
@@ -26,6 +27,42 @@ go install github.com/tokenbleed/nibkit@latest
 Prebuilt binaries for darwin and linux (arm64 and amd64) are on the
 https://github.com/tokenbleed/nibkit/releases[releases] page. No runtime
 dependencies.
+
+== MCP server (AI tool integration)
+
+`nibkit mcp` speaks the Model Context Protocol over stdio (newline-delimited
+JSON-RPC, no dependencies), exposing the read-only commands as tools:
+`nibkit_wiring`, `nibkit_classes`, `nibkit_segues`, `nibkit_tree`,
+`nibkit_all`, `nibkit_info`. Each takes one `path` argument (any input the CLI
+accepts, including `.ipa` and `.app`).
+
+Claude Code:
+
+[source,sh]
+----
+claude mcp add nibkit -- nibkit mcp
+----
+
+opencode (`opencode.json`):
+
+[source,json]
+----
+{
+  "mcp": {
+    "nibkit": {
+      "type": "local",
+      "command": ["nibkit", "mcp"]
+    }
+  }
+}
+----
+
+Generic MCP client config: command `nibkit`, args `["mcp"]`, stdio transport.
+pi ships no built-in MCP client; the CLI is the same interface and extensions
+can wrap `nibkit mcp` if needed.
+
+The on-disk formats are documented field by field in
+link:docs/format.adoc[docs/format.adoc].
 
 == Usage
 
@@ -82,6 +119,26 @@ nibkit -J segues Foo.app | jq '.[] | .navigation'
 Tables size to the terminal width and long reports page through `$PAGER`
 (set `NIBKIT_PAGER=cat` to disable). Piped output stays raw for `grep` and
 `jq`. For raw strings just run `strings -a` on the nib files.
+
+== Repository layout
+
+[cols="2,5"]
+|===
+|`main.go`
+|CLI entry point: flags, dispatch, interactive menu
+
+|`internal/nib/`
+|format parsers (NIBArchive, keyedarchive/bplist), emitters, discovery
+
+|`internal/mcp/`
+|MCP server over stdio
+
+|`docs/format.adoc`
+|the on-disk nib formats, documented field by field
+
+|`internal/nib/*_test.go`
+|synthetic-nib builders and parser/emitter tests (no files lifted from apps)
+|===
 
 == Demo
 

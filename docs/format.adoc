@@ -1,0 +1,213 @@
+= NIB and storyboardc on-disk formats
+
+This document describes what nibkit parses. It was assembled by reading the
+formatting tools' output and the system's own nib corpus; Apple does not
+publish a spec. Field names follow the coding keys found in the files.
+
+== Container shapes
+
+[cols="2,3,5"]
+|===
+|Era |Container |Where it appears
+
+|2012 - present
+|NIBArchive
+|every `.nib` inside `.storyboardc` bundles and loose `.nib` files compiled by modern Xcode
+
+|2008 - 2012
+|binary plist wrapping an NSKeyedArchive
+|iOS apps from the era (`UINibObjectsKey` in `$top`) and macOS nibs (`IB.objectdata` in `$top`)
+|===
+
+== NIBArchive (2012 - present)
+
+All integers are little-endian unless noted. The file is four tables addressed
+by a fixed header.
+
+=== Header (50 bytes)
+
+[cols="3,1,6"]
+|===
+|Offset |Size |Field
+
+|0 |10 |magic, ASCII `NIBArchive`
+
+|10 |4 |format version (observed: 1)
+
+|14 |4 |coder version (observed: 9, 10, 11)
+
+|18 |4 |object count
+
+|22 |4 |object table offset
+
+|26 |4 |key count
+
+|30 |4 |key table offset
+
+|34 |4 |value count
+
+|38 |4 |value table offset
+
+|42 |4 |class count
+
+|46 |4 |class table offset
+|===
+
+=== Varints
+
+Lengths and table indices use 7-bit little-endian varints: bytes carry 7 bits
+each, low group first, and the terminal byte has the high bit (0x80) set.
+
+=== Key table
+
+`keyCount` entries, each `varint(length)` followed by that many raw UTF-8
+bytes. Not NUL-terminated.
+
+=== Class table
+
+`classCount` entries, each: `varint(nameLength)`, `varint(extraCount)`,
+`extraCount` u32s, then `nameLength` bytes of name. Trailing NULs in the name
+are padding. The u32 extras are class metadata nibkit does not currently
+interpret.
+
+=== Object table
+
+`objectCount` entries of three varints: class index, value start, value count.
+An object's coder values are `value[start .. start+count]` into the value
+table. Real files reference shared NSArrays with repeated `NS.objects` keys
+rather than one array value, so flat repetition is normal.
+
+=== Value table
+
+`valueCount` entries, each: `varint(keyIndex)`, one u8 type, then a payload
+whose width depends on the type.
+
+[cols="2,1,2,5"]
+|===
+|Type |Code |Payload |Meaning
+
+|int8 |0 |1 byte |signed
+
+|int16 |1 |2 bytes |signed, little-endian
+
+|int32 |2 |4 bytes |signed, little-endian
+
+|int64 |3 |8 bytes |signed, little-endian
+
+|true |4 |none |boolean
+
+|false |5 |none |boolean
+
+|float |6 |4 bytes |IEEE 754 binary32
+
+|double |7 |8 bytes |IEEE 754 binary64
+
+|data |8 |varint(length) + bytes |string bodies (see keys below), geometry, raw blobs
+
+|nil |9 |none |null
+
+|object |10 |4 bytes |unsigned index into the object table
+|===
+
+=== Coding keys that matter
+
+[cols="2,5"]
+|===
+|Key |Carries
+
+|`UINibTopLevelObjectsKey`
+|array on the root object; the tree of everything the nib instantiates
+
+|`UINibObjectsKey`, `UINibVisibleWindowsKey`, `UINibConnectionsKey`
+|iOS era holdovers, usually empty or redundant in modern files
+
+|`IB.objectdata`
+|macOS; the root NSIBObjectData document
+
+|`NS.bytes`, `NS.string`
+|DATA payload is a string body
+
+|`UIProxiedObjectIdentifier`
+|proxy identity (`IBFilesOwner`, `IBFirstResponder`)
+
+|`UILabel`, `UISource`, `UIDestination`
+|connection label and endpoints (modern and iOS legacy)
+
+|`NSLabel`, `NSSource`, `NSDestination`
+|same, macOS legacy connectors
+
+|`UIClassName`, `UIOriginalClassName`
+|custom class and its base on a `UIClassSwapper`
+
+|`NSClassName`
+|same idea on `NSCustomObject` / `NSCustomView` / `NSClassSwapper`
+
+|`UIEventMask`
+|action event bitmask; nibkit names the common bits (touchUpInside 64 and so on)
+
+|`UIStoryboardSegueTemplates`
+|storyboard segues; each template carries identifier, kind, custom class, destination
+
+|`UIViewControllers`, `UIChildViewControllers`
+|container relationships that never compile to segues (tabs, nav roots)
+
+|`UINibKeyValuePair` (`UIKeyPath`, `UIValue`, `UIObject`)
+|user-defined runtime attributes
+|===
+
+=== Connection objects
+
+[cols="2,5"]
+|===
+|Class |Meaning
+
+|`UIRuntimeOutletConnection`
+|outlet wiring
+
+|`UIRuntimeEventConnection`
+|target-action wiring (selector in `UILabel`, mask in `UIEventMask`)
+
+|`NSNibOutletConnector`
+|macOS legacy outlet
+
+|`NSNibControlConnector`
+|macOS legacy target-action (selector in `NSLabel`)
+
+|`NSNibBindingConnector`
+|macOS Cocoa binding (`NSBinding`, `NSKeyPath`)
+
+|`NSIBUserDefinedRuntimeAttributesConnector`
+|macOS runtime attributes as parallel `NSKeyPaths` / `NSValues` arrays
+
+|`NSIBHelpConnector`
+|tooltip link (rendered as a minor wiring kind)
+|===
+
+== Pre-2012: keyedarchive nibs
+
+The container is a binary property list (`bplist00`) whose root dictionary has
+`$archiver` = `NSKeyedArchiver`, a `$top` dictionary, and an `$objects` array.
+Everything else in the file is ordinary binary-plist structure; the nib
+semantics live in two shapes:
+
+* iOS: `$top` carries `UINibObjectsKey`, `UINibConnectionsKey`,
+  `UINibTopLevelObjectsKey`, `UINibVisibleWindowsKey`. Connections are
+  `UIRuntimeOutletConnection` dicts with the same `UILabel` / `UISource` /
+  `UIDestination` keys the modern format uses, and custom classes ride
+  `UIClassSwapper` objects, so both eras decode identically.
+* macOS: `$top` carries `IB.objectdata` pointing at an `NSIBObjectData`
+  document with `NSConnections`, `NSObjectsKeys`/`NSObjectsValues`,
+  `NSRoot`, `NSVisibleWindows`, and connector objects as in the table above.
+
+UID values in dicts are indices into the `$objects` array (position 0 is the
+`$null` placeholder string).
+
+nibkit synthesizes the keyedarchive form into the NIBArchive table shape at
+parse time, which is why every command works on both eras without branching.
+
+== Storyboard bundles
+
+A `.storyboardc` directory is just several `.nib` files: one per scene
+(`UIViewController-<sceneID>.nib`), one per view (`<sceneID>-view-<objectID>.nib`),
+plus a `Info.plist`. Each nib is an independent NIBArchive; nibkit walks and
+merges them, recovering scene wiring and segue templates across files.

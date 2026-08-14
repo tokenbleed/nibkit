@@ -1,4 +1,4 @@
-package main
+package nib
 
 import (
 	"encoding/binary"
@@ -229,6 +229,19 @@ func parseLegacy(buf []byte) *Archive {
 		a.Objects = append(a.Objects, objectEntry{ClassIdx: internCls(cls), ValueStart: start, ValueCount: count})
 	}
 
+	// deferred non-UID refs: value payloads patched once all $objects slots
+	// exist, so slotFor appends after (never inside) the main table.
+	var pend []int // value indexes, alternating with refs
+	// plist table ref -> synthesized slot. $objects members map 1:1; values
+	// only reachable inline (class-name strings etc.) get a fresh slot.
+	refSlot := make([]int, len(p.objs))
+	for i := range refSlot {
+		refSlot[i] = -1
+	}
+	for i, ref := range objects.refs {
+		refSlot[ref] = i + 1
+	}
+
 	// slot i+1 in the synthesized table = $objects[i]; slot 0 is a synthetic
 	// root exposing the $top keys, so the tree walk starts somewhere meaningful.
 	a.Objects = make([]objectEntry, 0, len(objects.refs)+1)
@@ -241,16 +254,6 @@ func parseLegacy(buf []byte) *Archive {
 	}
 	a.Objects[0].ValueStart = rootStart
 	a.Objects[0].ValueCount = len(a.Values) - rootStart
-
-	// plist table ref -> synthesized slot. $objects members map 1:1; values
-	// only reachable inline (class-name strings etc.) get a fresh slot.
-	refSlot := make([]int, len(p.objs))
-	for i := range refSlot {
-		refSlot[i] = -1
-	}
-	for i, ref := range objects.refs {
-		refSlot[ref] = i + 1
-	}
 	// intVal writes an inline int picking the narrowest NIBArchive type.
 	intVal := func(key string, n int64) {
 		t := tInt64
@@ -318,9 +321,6 @@ func parseLegacy(buf []byte) *Archive {
 		}
 		return slot
 	}
-	// deferred non-UID refs: value payloads patched once all $objects slots
-	// exist, so slotFor appends after (never inside) the main table.
-	var pend []int // value indexes, alternating with refs
 	objRef := func(key string, ref int) {
 		if u, ok := p.decode(ref).(lUID); ok {
 			emitVal(key, tObj, uint32(u.n+1))

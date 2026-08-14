@@ -1,4 +1,4 @@
-package main
+package nib
 
 import (
 	"encoding/binary"
@@ -125,7 +125,7 @@ func (r *reader) vint() int {
 }
 
 // parse parses a NIBArchive blob, recovering reader panics into errors.
-func parse(buf []byte) (a *Archive, err error) {
+func Parse(buf []byte) (a *Archive, err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			a = nil

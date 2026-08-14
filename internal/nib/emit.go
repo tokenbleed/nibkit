@@ -1,4 +1,4 @@
-package main
+package nib
 
 import (
 	"fmt"
@@ -48,21 +48,6 @@ func (a *Archive) objStringProp(idx int, key string) string {
 		return ""
 	}
 	return a.objString(int(v.Payload.(uint32)))
-}
-
-// objIntProp reads a named scalar prop as an int.
-func (a *Archive) objIntProp(idx int, key string) (int, bool) {
-	v, ok := a.objProps(idx)[key]
-	if !ok {
-		return 0, false
-	}
-	switch x := v.Payload.(type) {
-	case int:
-		return x, true
-	case int64:
-		return int(x), true
-	}
-	return 0, false
 }
 
 // arrayRefs returns the tObj element indices of an NSArray object.
@@ -129,10 +114,10 @@ func (a *Archive) scalarString(key string, v value) string {
 
 // ==================== dump (tree) ====================
 
-func (a *Archive) printTree(root interface{}, indent int) {
+func (a *Archive) PrintTree(root interface{}, indent int) {
 	pad := strings.Repeat("  ", indent)
 	if root == nil {
-		fmt.Printf("%s(no root object)\n", pad)
+		fmt.Fprintf(Out, "%s(no root object)\n", pad)
 		return
 	}
 	switch v := root.(type) {
@@ -145,7 +130,7 @@ func (a *Archive) printTree(root interface{}, indent int) {
 		); cl != "" && cl != v.Class {
 			extra = "  <" + cl + ">"
 		}
-		fmt.Printf("%s%s (#%d)%s\n", pad, sanitize(v.Class), v.Idx, sanitize(extra))
+		fmt.Fprintf(Out, "%s%s (#%d)%s\n", pad, sanitize(v.Class), v.Idx, sanitize(extra))
 		for _, p := range v.Props {
 			switch pv := p.Value.(type) {
 			case *node:
@@ -153,16 +138,16 @@ func (a *Archive) printTree(root interface{}, indent int) {
 				if s := nodeString(pv); s != "" {
 					label = sanitize(p.Key) + ": \"" + s + "\""
 				}
-				fmt.Printf("%s  %s:\n", pad, label)
-				a.printTree(pv, indent+2)
+				fmt.Fprintf(Out, "%s  %s:\n", pad, label)
+				a.PrintTree(pv, indent+2)
 			case backref:
-				fmt.Printf("%s  %s: -> backref #%d\n", pad, sanitize(p.Key), pv.Idx)
+				fmt.Fprintf(Out, "%s  %s: -> backref #%d\n", pad, sanitize(p.Key), pv.Idx)
 			default:
-				fmt.Printf("%s  %s = %s\n", pad, sanitize(p.Key), fmtScalar(pv))
+				fmt.Fprintf(Out, "%s  %s = %s\n", pad, sanitize(p.Key), fmtScalar(pv))
 			}
 		}
 	case backref:
-		fmt.Printf("%s-> backref #%d\n", pad, v.Idx)
+		fmt.Fprintf(Out, "%s-> backref #%d\n", pad, v.Idx)
 	}
 }
 
@@ -260,7 +245,7 @@ type conn struct {
 	Event       string `json:"event,omitempty"`
 }
 
-func (a *Archive) connections() []conn {
+func (a *Archive) Connections() []conn {
 	var out []conn
 	for i := range a.Objects {
 		name := a.className(i)
@@ -323,7 +308,7 @@ type runtimeAttr struct {
 	Value   string `json:"value"`
 }
 
-func (a *Archive) runtimeAttributes() []runtimeAttr {
+func (a *Archive) RuntimeAttributes() []runtimeAttr {
 	var out []runtimeAttr
 	for i := range a.Objects {
 		switch a.className(i) {
@@ -398,7 +383,7 @@ type customClass struct {
 	Module  string `json:"module,omitempty"`
 }
 
-func (a *Archive) customClasses() []customClass {
+func (a *Archive) CustomClasses() []customClass {
 	seen := map[string]bool{}
 	var out []customClass
 	for i := range a.Objects {
@@ -471,7 +456,7 @@ func segueKind(cls string) string {
 
 // navEdges returns the full navigation graph: storyboard segue templates plus
 // container child arrays (tab bar tabs, navigation roots, etc.).
-func (a *Archive) navEdges() []navEdge {
+func (a *Archive) NavEdges() []navEdge {
 	var out []navEdge
 	for i := range a.Objects {
 		cn := a.className(i)
