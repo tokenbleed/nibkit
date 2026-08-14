@@ -97,11 +97,10 @@ const banner = `nibkit ` + version + ` - NIBArchive decompiler (.nib / .storyboa
 .ipa files are extracted automatically. drop in a path and pick an action.`
 
 func isTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	// True isatty on both ends: TIOCGWINSZ fails with ENOTTY on pipes, files,
+	// and /dev/null (a char device), so the interactive menu only starts on a
+	// real console.
+	return isTTY(os.Stdin.Fd()) && isTTY(os.Stdout.Fd())
 }
 
 func runInteractive() int {

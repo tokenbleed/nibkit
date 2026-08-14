@@ -13,3 +13,5 @@ func termWidth() int {
 	}
 	return 80
 }
+
+func isTTY(fd uintptr) bool { return false }

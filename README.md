@@ -66,7 +66,7 @@ For raw strings just run `strings -a` on the nib files.
 
 ## build
 
-    go build -trimpath -o nibkit .
+    go build -trimpath -ldflags="-s -w" -o nibkit .   # ~2.4 MB static binary
     # cross-compile: GOOS/GOARCH (darwin/linux, arm64/amd64)
 
 ## format notes
