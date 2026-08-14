@@ -1,14 +1,13 @@
 = nibkit
 
-NIBArchive decompiler for iOS/macOS pentests. Parses compiled `.nib` and
+Decompiler for compiled iOS/macOS interface files. Parses `.nib` and
 `.storyboardc` files (the format real apps ship), extracts object structure,
 wiring, custom classes, and the navigation graph. Single static Go binary,
 stdlib only, cross-compiles anywhere.
 
 `strings` gives you tokens. nibkit gives you *relationships*: which control
 fires which selector, which custom class backs which scene, how navigation
-flows, and what runtime attributes were set. That is the attack surface
-`strings` cannot show.
+flows, and what runtime attributes were set.
 
 == Install
 
@@ -44,7 +43,7 @@ nibkit                       # no args + terminal: interactive menu
 |the object graph, indented, with resolved custom-class annotations (`UIClassSwapper` shows the real class)
 
 |wiring
-|the high-value command: outlets (`myButton -> MyViewController`), actions (`didTapLogin: [touchUpInside]`), and RUNTIME ATTRS (`keyPath=value`, a classic place to hide flags and feature switches)
+|the high-value command: outlets (`myButton -> MyViewController`), actions (`didTapLogin: [touchUpInside]`), and runtime attributes (`keyPath=value`)
 
 |classes
 |every custom IB class with base class and scene ID, Swift-mangled names recovered
@@ -91,20 +90,28 @@ Tables size to the terminal width and long reports page through `$PAGER`
 |Input |Status |Notes
 
 |.nib, .storyboardc (NIBArchive)
-|supported |coder versions 9, 10, and 11; verified on apps from 2019 through current iOS 18 / macOS 15 era, including macOS system apps
+|supported |coder versions 9, 10, and 11; verified on apps from 2019 through current macOS 26 / iOS 27, including macOS system apps
 
 |.app bundles, directories
 |supported |walked recursively
 
 |.ipa
-|supported |extracted automatically; decompression budget guards zip bombs
+|supported |extracted automatically
 
-|pre-NIBArchive nibs (binary plist / NSKeyedArchive, pre-2012 apps)
+|pre-2012 keyedarchive nibs (binary plist, `UINibObjectsKey`)
+|supported |iOS apps from the NSKeyedArchiver era decode through the same commands
+
+|pre-2012 macOS nibs (`IB.objectdata`)
 |not supported |rejected with a clear one-line error
 
 |SwiftUI apps
 |nothing to parse |no nib files exist
 |===
+
+== Contact
+
+Questions, bugs, broken files: open an issue, or reach me at
+https://t.me/keybleed[t.me/keybleed].
 
 == Build
 
