@@ -83,6 +83,16 @@ Tables size to the terminal width and long reports page through `$PAGER`
 (set `NIBKIT_PAGER=cat` to disable). Piped output stays raw for `grep` and
 `jq`. For raw strings just run `strings -a` on the nib files.
 
+== Demo
+
+Demo of wiring on a real app, legacy (pre-2012) class extraction, a Mermaid
+navigation graph, and a macOS system app:
+
+image::demo.gif[demo]
+
+The original asciinema session is attached to the
+https://github.com/tokenbleed/nibkit/releases/tag/v1.3.0[v1.3.0 release].
+
 == Format support
 
 [cols="3,2,5"]
