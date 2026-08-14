@@ -9,3 +9,6 @@ vendor/
 
 # editor / os
 .DS_Store
+
+# release artifacts (built locally, uploaded via gh)
+/dist/
