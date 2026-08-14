@@ -156,6 +156,15 @@ func parseArchive(buf []byte) *Archive {
 	clsCount := int(r.u32())
 	clsOff := int(r.u32())
 
+	// DoS guard: every table entry consumes at least one byte of input, so a
+	// count larger than the buffer cannot occur in a valid file. Without this,
+	// a 50-byte nib with objCount=0xFFFFFFFF asks the allocator for >100GB and
+	// the runtime dies with an unrecoverable out-of-memory (no panic, no recover).
+	if keyCount > len(buf) || clsCount > len(buf)/2 ||
+		objCount > len(buf)/3 || valCount > len(buf)/2 {
+		panic(errShort)
+	}
+
 	// keys
 	r.pos = keyOff
 	a.Keys = make([]string, keyCount)
@@ -169,6 +178,9 @@ func parseArchive(buf []byte) *Archive {
 	for i := range a.Classes {
 		ln := r.vint()
 		nextra := r.vint()
+		if nextra > len(buf)/4 { // each extra is 4 bytes; guard the alloc below
+			panic(errShort)
+		}
 		extras := make([]uint32, nextra)
 		for j := range extras {
 			extras[j] = r.u32()
@@ -187,7 +199,6 @@ func parseArchive(buf []byte) *Archive {
 			ValueCount: r.vint(),
 		}
 	}
-
 	// coder values
 	r.pos = valOff
 	a.Values = make([]value, valCount)
@@ -224,6 +235,24 @@ func parseArchive(buf []byte) *Archive {
 		a.Values[i] = value{KeyIdx: ki, Type: t, Payload: pl}
 	}
 	return a
+}
+
+// valueRange returns the clamped [lo, hi) window into a.Values for an
+// object's coder values. Fuzzed archives carry huge or negative ValueStart and
+// ValueCount (including int-overflow wraps), so every consumer must go through
+// this instead of trusting the raw fields.
+func (a *Archive) valueRange(oe objectEntry) (int, int) {
+	lo, hi := oe.ValueStart, oe.ValueStart+oe.ValueCount
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > len(a.Values) || hi < lo { // hi < lo == overflow wrap
+		hi = len(a.Values)
+	}
+	if lo > len(a.Values) {
+		lo = len(a.Values)
+	}
+	return lo, hi
 }
 
 // className resolves an object index to its runtime class name.

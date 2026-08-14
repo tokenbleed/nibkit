@@ -16,7 +16,8 @@ func (a *Archive) objProps(idx int) map[string]value {
 		return m
 	}
 	oe := a.Objects[idx]
-	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
+	lo, hi := a.valueRange(oe)
+	for i := lo; i < hi; i++ {
 		v := a.Values[i]
 		key := "?"
 		if v.KeyIdx >= 0 && v.KeyIdx < len(a.Keys) {
@@ -71,7 +72,8 @@ func (a *Archive) arrayRefs(idx int) []int {
 		return out
 	}
 	oe := a.Objects[idx]
-	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
+	lo, hi := a.valueRange(oe)
+	for i := lo; i < hi; i++ {
 		if v := a.Values[i]; v.Type == tObj {
 			out = append(out, int(v.Payload.(uint32)))
 		}
@@ -125,6 +127,10 @@ func (a *Archive) scalarString(key string, v value) string {
 
 func (a *Archive) printTree(root interface{}, indent int) {
 	pad := strings.Repeat("  ", indent)
+	if root == nil {
+		fmt.Printf("%s(no root object)\n", pad)
+		return
+	}
 	switch v := root.(type) {
 	case *node:
 		extra := ""

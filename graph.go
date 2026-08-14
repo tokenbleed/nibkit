@@ -64,6 +64,9 @@ func cutNull(s string) string {
 // buildGraph resolves object[idx] into a nested node tree, following OBJ refs.
 // A shared seen set expands each object once; later refs collapse to backref.
 func (a *Archive) buildGraph(idx int, seen map[int]bool) interface{} {
+	if idx < 0 || idx >= len(a.Objects) {
+		return nil // dangling OBJ ref (fuzzed/corrupt archive)
+	}
 	if seen[idx] {
 		return backref{idx}
 	}
@@ -74,7 +77,8 @@ func (a *Archive) buildGraph(idx int, seen map[int]bool) interface{} {
 		name = a.Classes[oe.ClassIdx].Name
 	}
 	n := &node{Idx: idx, Class: name}
-	for i := oe.ValueStart; i < oe.ValueStart+oe.ValueCount && i < len(a.Values); i++ {
+	lo, hi := a.valueRange(oe)
+	for i := lo; i < hi; i++ {
 		v := a.Values[i]
 		key := "?"
 		if v.KeyIdx >= 0 && v.KeyIdx < len(a.Keys) {
