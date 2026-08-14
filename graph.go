@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
+	"strings"
 )
 
 // geo: keys whose DATA payload is a 1-byte tag + N little-endian doubles.
@@ -47,7 +49,7 @@ func decodeValue(key string, t int, pl interface{}) interface{} {
 		return out
 	}
 	if strBytes[key] {
-		return cutNull(string(data))
+		return sanitize(cutNull(string(data)))
 	}
 	return bytesToHex(data)
 }
@@ -59,6 +61,35 @@ func cutNull(s string) string {
 		}
 	}
 	return s
+}
+
+// sanitize neutralizes terminal control characters so nib-controlled
+// strings cannot inject escape sequences (clipboard writes, beeps, cursor
+// hijacks) into the terminal or pager. Hostile bytes stay visible, escaped
+// as hex, so they remain useful for analysis.
+func sanitize(s string) string {
+	bad := func(b byte) bool {
+		return (b < 0x20 && b != '\t' && b != '\n') || b == 0x7f
+	}
+	i := 0
+	for ; i < len(s); i++ {
+		if bad(s[i]) {
+			break
+		}
+	}
+	if i == len(s) {
+		return s
+	}
+	var sb strings.Builder
+	sb.WriteString(s[:i])
+	for ; i < len(s); i++ {
+		if bad(s[i]) {
+			fmt.Fprintf(&sb, "\\x%02x", s[i])
+		} else {
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
 }
 
 // buildGraph resolves object[idx] into a nested node tree, following OBJ refs.

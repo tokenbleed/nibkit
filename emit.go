@@ -35,7 +35,7 @@ func (a *Archive) objString(idx int) string {
 			continue
 		}
 		if b, ok := v.Payload.([]byte); ok {
-			return cutNull(string(b))
+			return sanitize(cutNull(string(b)))
 		}
 	}
 	return ""
@@ -98,7 +98,7 @@ func (a *Archive) classLabel(idx int) string {
 			return n
 		}
 	}
-	return a.className(idx)
+	return sanitize(a.className(idx))
 }
 
 // sceneID returns the storyboard scene identifier of an object if any.
@@ -145,20 +145,20 @@ func (a *Archive) printTree(root interface{}, indent int) {
 		); cl != "" && cl != v.Class {
 			extra = "  <" + cl + ">"
 		}
-		fmt.Printf("%s%s (#%d)%s\n", pad, v.Class, v.Idx, extra)
+		fmt.Printf("%s%s (#%d)%s\n", pad, sanitize(v.Class), v.Idx, sanitize(extra))
 		for _, p := range v.Props {
 			switch pv := p.Value.(type) {
 			case *node:
-				label := p.Key
+				label := sanitize(p.Key)
 				if s := nodeString(pv); s != "" {
-					label = p.Key + ": \"" + s + "\""
+					label = sanitize(p.Key) + ": \"" + s + "\""
 				}
 				fmt.Printf("%s  %s:\n", pad, label)
 				a.printTree(pv, indent+2)
 			case backref:
-				fmt.Printf("%s  %s: -> backref #%d\n", pad, p.Key, pv.Idx)
+				fmt.Printf("%s  %s: -> backref #%d\n", pad, sanitize(p.Key), pv.Idx)
 			default:
-				fmt.Printf("%s  %s = %s\n", pad, p.Key, fmtScalar(pv))
+				fmt.Printf("%s  %s = %s\n", pad, sanitize(p.Key), fmtScalar(pv))
 			}
 		}
 	case backref:
@@ -206,7 +206,7 @@ func fmtScalar(v interface{}) string {
 	case int64:
 		return strconv.FormatInt(x, 10)
 	case string:
-		return strconv.Quote(x)
+		return strconv.Quote(sanitize(x))
 	case []float64:
 		parts := make([]string, len(x))
 		for i, f := range x {
@@ -375,7 +375,7 @@ func (a *Archive) objScalar(idx int) string {
 		if v.Type == tData {
 			if strBytes[k] {
 				if b, ok := v.Payload.([]byte); ok {
-					return cutNull(string(b))
+					return sanitize(cutNull(string(b)))
 				}
 			}
 			continue

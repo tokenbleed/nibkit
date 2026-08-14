@@ -595,6 +595,12 @@ func startPager() func() {
 
 // renderTable prints aligned columns that shrink to the terminal width.
 func renderTable(headers []string, rows [][]string) {
+	// backstop: nib-controlled strings must never reach the terminal raw
+	for _, r := range rows {
+		for i := range r {
+			r[i] = sanitize(r[i])
+		}
+	}
 	rw := func(s string) int {
 		n := 0
 		for range s {
@@ -905,6 +911,20 @@ func resolveImpl(dest string, candidates []customClass) string {
 }
 
 func emitFrida(w io.Writer, blobs []blob) {
+	// safeName gates what may be interpolated into generated JS: selectors,
+	// class names and labels from a hostile nib must not reach hooks.js raw.
+	safeName := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for i := 0; i < len(s); i++ {
+			b := s[i]
+			if b < 0x21 || b > 0x7e || b == 0x27 || b == 0x22 || b == 0x5c || b == 0x2f {
+				return false
+			}
+		}
+		return true
+	}
 	var hooks []fridaHook
 	var candidates []customClass
 	seen := map[string]bool{}
@@ -913,12 +933,12 @@ func emitFrida(w io.Writer, blobs []blob) {
 			continue
 		}
 		for _, c := range b.arc.connections() {
-			if c.Kind == "action" {
+			if c.Kind == "action" && safeName(c.Name) && safeName(c.Source) && safeName(c.Destination) {
 				hooks = append(hooks, fridaHook{b.label, c.Name, c.Source, c.Destination, c.Event})
 			}
 		}
 		for _, cc := range b.arc.customClasses() {
-			if !seen[cc.Class] {
+			if !seen[cc.Class] && safeName(cc.Class) {
 				seen[cc.Class] = true
 				candidates = append(candidates, cc)
 			}
