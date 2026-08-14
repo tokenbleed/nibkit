@@ -49,6 +49,21 @@ func (a *Archive) objStringProp(idx int, key string) string {
 	return a.objString(int(v.Payload.(uint32)))
 }
 
+// objIntProp reads a named scalar prop as an int.
+func (a *Archive) objIntProp(idx int, key string) (int, bool) {
+	v, ok := a.objProps(idx)[key]
+	if !ok {
+		return 0, false
+	}
+	switch x := v.Payload.(type) {
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	}
+	return 0, false
+}
+
 // arrayRefs returns the tObj element indices of an NSArray object.
 func (a *Archive) arrayRefs(idx int) []int {
 	var out []int
@@ -78,6 +93,11 @@ func (a *Archive) classLabel(idx int) string {
 		}
 	}
 	return a.className(idx)
+}
+
+// sceneID returns the storyboard scene identifier of an object if any.
+func (a *Archive) sceneID(idx int) string {
+	return a.objStringProp(idx, "UIStoryboardIdentifier")
 }
 
 func firstNonEmpty(ss ...string) string {
@@ -136,7 +156,6 @@ func (a *Archive) printTree(root interface{}, indent int) {
 	}
 }
 
-// nodeString returns the text of an NSString node, else "".
 func nodeString(n *node) string {
 	if n.Class != "NSString" {
 		return ""
@@ -149,7 +168,6 @@ func nodeString(n *node) string {
 	return ""
 }
 
-// nodeStringProp finds a string-valued NSString property on a built graph node.
 func (a *Archive) nodeStringProp(n *node, key string) string {
 	for _, p := range n.Props {
 		if p.Key != key {
@@ -188,44 +206,6 @@ func fmtScalar(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", x)
 	}
-}
-
-// ==================== strings ====================
-
-type strItem struct {
-	Source string `json:"source"`
-	Value  string `json:"value"`
-}
-
-func (a *Archive) collectStrings() []strItem {
-	var out []strItem
-	seen := map[string]bool{}
-	add := func(src, val string) {
-		if val == "" || seen[val] {
-			return
-		}
-		seen[val] = true
-		out = append(out, strItem{src, val})
-	}
-	for _, c := range a.Classes {
-		add("class", c.Name)
-	}
-	for _, v := range a.Values {
-		if v.Type != tData {
-			continue
-		}
-		key := ""
-		if v.KeyIdx >= 0 && v.KeyIdx < len(a.Keys) {
-			key = a.Keys[v.KeyIdx]
-		}
-		if strBytes[key] {
-			add("value", cutNull(string(v.Payload.([]byte))))
-		}
-	}
-	for _, k := range a.Keys {
-		add("key", k)
-	}
-	return out
 }
 
 // ==================== wiring (outlets + actions) ====================
@@ -333,7 +313,7 @@ func (a *Archive) runtimeAttributes() []runtimeAttr {
 		if v, ok := p["UIValue"]; ok {
 			val = a.scalarString("UIValue", v)
 		}
-		out = append(out, runtimeAttr{Object: owner, KeyPath: kp, Value: val})
+		out = append(out, runtimeAttr{owner, kp, val})
 	}
 	return out
 }
@@ -363,7 +343,7 @@ func (a *Archive) customClasses() []customClass {
 		out = append(out, customClass{
 			Class:   name,
 			Base:    base,
-			SceneID: a.objStringProp(i, "UIStoryboardIdentifier"),
+			SceneID: a.sceneID(i),
 			Module:  a.objStringProp(i, "UICustomModule"),
 		})
 	}
@@ -371,13 +351,14 @@ func (a *Archive) customClasses() []customClass {
 	return out
 }
 
-// ==================== segues (storyboard navigation) ====================
+// ==================== navigation graph (segues + containers) ====================
 
-type segue struct {
-	SourceClass string            `json:"sourceClass"`
-	SourceID    string            `json:"sourceSceneID,omitempty"`
-	Kind        string            `json:"kind"`
-	DestID      string            `json:"destinationID"`
+type navEdge struct {
+	Kind        string            `json:"kind"` // show/push/modal/embed/relationship/custom/container
+	SrcClass    string            `json:"sourceClass"`
+	SrcID       string            `json:"sourceSceneID,omitempty"`
+	DstClass    string            `json:"destinationClass,omitempty"`
+	DstID       string            `json:"destinationID,omitempty"`
 	Identifier  string            `json:"identifier,omitempty"`
 	Selector    string            `json:"selector,omitempty"`
 	CustomClass string            `json:"customClass,omitempty"`
@@ -401,36 +382,73 @@ func segueKind(cls string) string {
 	case strings.Contains(cls, "Custom"):
 		return "custom"
 	default:
-		return strings.TrimPrefix(strings.TrimPrefix(cls, "UIStoryboard"), "UI")
+		return "segue"
 	}
 }
 
-func (a *Archive) segues() []segue {
-	var out []segue
+// navEdges returns the full navigation graph: storyboard segue templates plus
+// container child arrays (tab bar tabs, navigation roots, etc.).
+func (a *Archive) navEdges() []navEdge {
+	var out []navEdge
 	for i := range a.Objects {
-		if a.className(i) != "UIClassSwapper" {
+		cn := a.className(i)
+		// segue templates live under a UIClassSwapper's UIStoryboardSegueTemplates
+		if cn == "UIClassSwapper" {
+			if v, ok := a.objProps(i)["UIStoryboardSegueTemplates"]; ok && v.Type == tObj {
+				srcClass := a.objStringProp(i, "UIClassName")
+				srcID := a.sceneID(i)
+				for _, sIdx := range a.arrayRefs(int(v.Payload.(uint32))) {
+					out = append(out, a.extractSegue(srcClass, srcID, sIdx))
+				}
+			}
+		}
+		// container children: UIViewControllers / UIChildViewControllers arrays
+		for _, k := range []string{"UIViewControllers", "UIChildViewControllers"} {
+			v, ok := a.objProps(i)[k]
+			if !ok || v.Type != tObj {
+				continue
+			}
+			srcClass := a.classLabel(i)
+			srcID := a.sceneID(i)
+			for _, childIdx := range a.arrayRefs(int(v.Payload.(uint32))) {
+				out = append(out, navEdge{
+					Kind:     "container",
+					SrcClass: srcClass,
+					SrcID:    srcID,
+					DstClass: a.classLabel(childIdx),
+					DstID:    a.sceneID(childIdx),
+				})
+			}
+		}
+	}
+	return dedupeEdges(out)
+}
+
+func edgeKey(e navEdge) string {
+	return e.Kind + "|" + e.SrcClass + "|" + e.SrcID + "|" + e.DstClass + "|" + e.DstID
+}
+
+func dedupeEdges(in []navEdge) []navEdge {
+	seen := map[string]bool{}
+	var out []navEdge
+	for _, e := range in {
+		k := edgeKey(e)
+		if seen[k] {
 			continue
 		}
-		v, ok := a.objProps(i)["UIStoryboardSegueTemplates"]
-		if !ok || v.Type != tObj {
-			continue
-		}
-		srcClass := a.objStringProp(i, "UIClassName")
-		srcID := a.objStringProp(i, "UIStoryboardIdentifier")
-		for _, sIdx := range a.arrayRefs(int(v.Payload.(uint32))) {
-			out = append(out, a.extractSegue(srcClass, srcID, sIdx))
-		}
+		seen[k] = true
+		out = append(out, e)
 	}
 	return out
 }
 
-func (a *Archive) extractSegue(srcClass, srcID string, sIdx int) segue {
+func (a *Archive) extractSegue(srcClass, srcID string, sIdx int) navEdge {
 	cls := a.className(sIdx)
-	s := segue{
-		SourceClass: srcClass,
-		SourceID:    srcID,
-		Kind:        segueKind(cls),
-		DestID:      a.objStringProp(sIdx, "UIDestinationViewControllerIdentifier"),
+	e := navEdge{
+		Kind:     segueKind(cls),
+		SrcClass: srcClass,
+		SrcID:    srcID,
+		DstID:    a.objStringProp(sIdx, "UIDestinationViewControllerIdentifier"),
 	}
 	details := map[string]string{}
 	for k, v := range a.objProps(sIdx) {
@@ -443,25 +461,25 @@ func (a *Archive) extractSegue(srcClass, srcID string, sIdx int) segue {
 		}
 		switch k {
 		case "UIDestinationViewControllerIdentifier":
-			// already captured as DestID
+			// captured as DstID
 		case "UICustomPrepareForChildViewControllersSegueName", "UICustomSeguePerformSelectorName":
-			if s.Selector == "" {
-				s.Selector = val
+			if e.Selector == "" {
+				e.Selector = val
 			}
 		case "UIIdentifier", "UICustomIdentifier":
-			if s.Identifier == "" {
-				s.Identifier = val
+			if e.Identifier == "" {
+				e.Identifier = val
 			}
 		case "UISegueClassName", "UICustomClass":
-			if s.CustomClass == "" {
-				s.CustomClass = val
+			if e.CustomClass == "" {
+				e.CustomClass = val
 			}
 		default:
 			details[k] = val
 		}
 	}
 	if len(details) > 0 {
-		s.Details = details
+		e.Details = details
 	}
-	return s
+	return e
 }

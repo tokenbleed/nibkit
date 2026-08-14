@@ -8,9 +8,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -28,14 +29,14 @@ func main() {
 }
 
 type cli struct {
-	cmd      string
-	paths    []string
-	jsonOut  bool
-	fridaOut bool
+	cmd        string
+	paths      []string
+	jsonOut    bool
+	fridaOut   bool
+	mermaidOut bool
 }
 
 func run(args []string) int {
-	// no args + interactive terminal => guided menu
 	if len(args) == 0 && isTerminal() {
 		return runInteractive()
 	}
@@ -46,7 +47,6 @@ func run(args []string) int {
 		return 2
 	}
 
-	// collect blobs from every input path
 	var blobs []blob
 	for _, p := range c.paths {
 		bs, cleanup, derr := discover(p)
@@ -55,7 +55,7 @@ func run(args []string) int {
 			continue
 		}
 		if cleanup != nil {
-			cleanup() // nib data is already in memory; temp dir not needed
+			cleanup()
 		}
 		blobs = append(blobs, bs...)
 	}
@@ -74,6 +74,10 @@ func run(args []string) int {
 		}
 	}
 
+	if c.mermaidOut {
+		emitMermaid(blobs)
+		return 0
+	}
 	if c.fridaOut {
 		emitFrida(os.Stdout, blobs)
 		if hadErr {
@@ -161,10 +165,10 @@ func printMenu() {
   1  tree      object graph
   2  wiring    outlets + @IBAction selectors + runtime attributes
   3  classes   custom Interface Builder classes
-  4  segues    storyboard navigation graph
-  5  strings   search archived strings
-  6  frida     @IBAction hooks -> hooks.js
-  7  json      export structured data
+  4  nav       segue + container navigation graph
+  5  frida     @IBAction hooks -> hooks.js
+  6  json      export structured data
+  7  mermaid   navigation graph as Mermaid (renders on GitHub)
   q  quit`)
 }
 
@@ -179,13 +183,11 @@ func doAction(r *bufio.Reader, choice string, blobs []blob) bool {
 	case "4":
 		emitText(blobs, "segues", false)
 	case "5":
-		fmt.Println("filter (regex, or blank for all):")
-		fmt.Print("> ")
-		printStrings(blobs, readline(r))
-	case "6":
 		writeFrida(blobs)
-	case "7":
+	case "6":
 		emitJSON(blobs, "all")
+	case "7":
+		emitMermaid(blobs)
 	default:
 		fmt.Fprintln(os.Stderr, "  unknown choice; pick 1-7 or q")
 		return false
@@ -219,35 +221,6 @@ func writeFrida(blobs []blob) {
 	fmt.Printf("  wrote hooks.js (%d hook(s)); run: frida -U -f <bundle-id> -l hooks.js\n", n)
 }
 
-func printStrings(blobs []blob, filter string) {
-	var re *regexp.Regexp
-	if filter != "" {
-		var err error
-		if re, err = regexp.Compile(filter); err != nil {
-			fmt.Fprintln(os.Stderr, "  bad regex:", err)
-			return
-		}
-	}
-	for _, b := range blobs {
-		if b.err != nil {
-			continue
-		}
-		var rows []strItem
-		for _, s := range b.arc.collectStrings() {
-			if filter == "" || re.MatchString(s.Value) {
-				rows = append(rows, s)
-			}
-		}
-		if len(rows) == 0 {
-			continue
-		}
-		fmt.Println(headerLine(b.label, b.arc))
-		for _, s := range rows {
-			fmt.Printf("%s\t%s\n", s.Source, s.Value)
-		}
-	}
-}
-
 func readline(r *bufio.Reader) string {
 	s, _ := r.ReadString('\n')
 	return strings.TrimSpace(s)
@@ -262,8 +235,6 @@ func yesNo(r *bufio.Reader, msg string, def bool) bool {
 	return s[0] == 'y'
 }
 
-// cleanPath tidies a path pasted or dragged into a terminal: trims whitespace,
-// strips surrounding quotes, and unescapes spaces (\  -> space).
 func cleanPath(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.Trim(s, "\"'")
@@ -273,16 +244,15 @@ func cleanPath(s string) string {
 
 // ==================== arg parsing (non-interactive) ====================
 
-// realCmd maps a subcommand (or alias) to an internal command name. Aliases keep
-// older invocations working: dump/tree -> tree, json -> tree+JSON, info -> info.
+// realCmd maps a subcommand (or alias) to an internal command name.
 var realCmd = map[string]struct {
 	cmd   string
 	isJos bool
 }{
 	"wiring":  {"wiring", false},
-	"strings": {"strings", false},
 	"classes": {"classes", false},
 	"segues":  {"segues", false},
+	"all":     {"all", false},
 	"dump":    {"tree", false},
 	"tree":    {"tree", false},
 	"info":    {"info", false},
@@ -304,6 +274,8 @@ func parseArgs(args []string) (cli, error) {
 			c.jsonOut = true
 		case "--frida":
 			c.fridaOut = true
+		case "--mermaid":
+			c.mermaidOut = true
 		default:
 			if strings.HasPrefix(a, "-") {
 				return c, fmt.Errorf("unknown flag: %s", a)
@@ -330,6 +302,9 @@ func parseArgs(args []string) (cli, error) {
 	if c.fridaOut && c.cmd != "wiring" {
 		return c, fmt.Errorf("error: --frida only applies to the 'wiring' command")
 	}
+	if c.mermaidOut && c.cmd != "segues" {
+		return c, fmt.Errorf("error: --mermaid only applies to the 'segues' command")
+	}
 	return c, nil
 }
 
@@ -343,9 +318,9 @@ USAGE
 COMMANDS
   (default)   object tree with header          (aliases: dump, tree)
   wiring      outlets, @IBAction selectors, runtime attributes
-  strings     all string values, one per line
   classes     custom (UIClassSwapper) classes
-  segues      storyboard segue / navigation graph
+  segues      navigation graph (segues + container children)
+  all         classes + wiring + navigation in one report
   info        header counts only
 
 INPUT
@@ -354,25 +329,24 @@ INPUT
                 Multiple paths are aggregated.
 
 FLAGS
-  -J, --json    emit JSON (single object for one blob, array for many)
-      --frida   generate Frida hook stubs from @IBAction wiring (wiring only)
-  -V, --version print version and exit
-  -h, --help    show this help
+  -J, --json     emit JSON (single object for one blob, array for many)
+      --frida    generate Frida hook stubs from @IBAction wiring (wiring only)
+      --mermaid  emit the navigation graph as a Mermaid flowchart (segues only)
+  -V, --version  print version and exit
+  -h, --help     show this help
 
 EXAMPLES
   nibkit                              # interactive menu
   nibkit Foo.ipa                      # tree (ipa auto-extracted)
-  nibkit wiring Foo.ipa               # outlets, actions, runtime attrs
-  nibkit wiring --frida Foo.storyboardc
-  nibkit strings Foo.app | grep -i http
-  nibkit -J wiring Foo.app | jq '.[] | .actions'
+  nibkit segues Foo.app               # navigation graph
+  nibkit segues --mermaid Foo.app     # Mermaid flowchart
+  nibkit -J segues Foo.app | jq '.[] | .navigation'
 `)
 }
 
 // ==================== discovery ====================
 
 func discover(path string) ([]blob, func(), error) {
-	// .ipa: extract to a temp dir, then walk the main .app inside Payload
 	if strings.EqualFold(filepath.Ext(path), ".ipa") {
 		appDir, cleanup, err := extractIPA(path)
 		if err != nil {
@@ -407,7 +381,6 @@ func discover(path string) ([]blob, func(), error) {
 	return blobs, nil, nil
 }
 
-// walkDir recursively collects every NIBArchive .nib file under a directory.
 func walkDir(root string) ([]blob, error) {
 	var out []blob
 	werr := filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
@@ -422,10 +395,10 @@ func walkDir(root string) ([]blob, error) {
 		}
 		data, rerr := os.ReadFile(p)
 		if rerr != nil {
-			return nil // skip unreadable files
+			return nil
 		}
 		if len(data) < 10 || string(data[:10]) != magic {
-			return nil // skip non-NIBArchive (old NeXT/bplist nibs)
+			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
 		out = append(out, blob{label: rel, data: data})
@@ -441,8 +414,6 @@ func walkDir(root string) ([]blob, error) {
 	return out, nil
 }
 
-// extractIPA unzips an .ipa into a temp dir and returns the main .app path plus
-// a cleanup func. Falls back to the temp dir root if Payload/*.app is absent.
 func extractIPA(path string) (string, func(), error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
@@ -457,7 +428,6 @@ func extractIPA(path string) (string, func(), error) {
 	root := filepath.Clean(tmp)
 	for _, f := range zr.File {
 		fp := filepath.Join(tmp, f.Name)
-		// guard against zip slip
 		if !strings.HasPrefix(filepath.Clean(fp)+string(os.PathSeparator), root+string(os.PathSeparator)) {
 			continue
 		}
@@ -524,16 +494,120 @@ func headerLine(label string, arc *Archive) string {
 		label, arc.Major, arc.Minor, len(arc.Objects), len(arc.Values), len(arc.Keys), len(arc.Classes))
 }
 
-func pad(s string, w int) string {
-	if len(s) >= w {
-		return s + " "
+// startPager pipes stdout through $PAGER (default less -RFX) when stdout is a
+// terminal, so long reports scroll/search cleanly. Piped output stays raw.
+// Uses an os.Pipe so the write end is a real *os.File the printer can target.
+func startPager() func() {
+	realStdout := os.Stdout
+	fi, err := realStdout.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return func() {}
 	}
-	return s + strings.Repeat(" ", w-len(s))
+	pager := firstNonEmpty(os.Getenv("NIBKIT_PAGER"), os.Getenv("PAGER"), "less -RFX")
+	if pager == "cat" || pager == "" {
+		return func() {}
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return func() {}
+	}
+	cmd := exec.Command("sh", "-c", pager)
+	cmd.Stdin = r
+	cmd.Stdout = realStdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		r.Close()
+		w.Close()
+		return func() {}
+	}
+	r.Close() // child holds the read end; parent only needs the write end
+	os.Stdout = w
+	return func() {
+		os.Stdout = realStdout
+		w.Close()
+		cmd.Wait()
+	}
+}
+
+// renderTable prints aligned columns that shrink to the terminal width.
+func renderTable(headers []string, rows [][]string) {
+	rw := func(s string) int {
+		n := 0
+		for range s {
+			n++
+		}
+		return n
+	}
+	nc := len(headers)
+	width := make([]int, nc)
+	for i, h := range headers {
+		width[i] = rw(h)
+	}
+	for _, r := range rows {
+		for i := 0; i < nc && i < len(r); i++ {
+			if w := rw(r[i]); w > width[i] {
+				width[i] = w
+			}
+		}
+	}
+	const minCol, gap, indent = 6, 2, 2
+	maxW := termWidth() - indent - (nc-1)*gap
+	total := 0
+	for _, x := range width {
+		total += x
+	}
+	// shrink columns to fit, but never the last (it holds findings/long text)
+	for total > maxW {
+		big := -1
+		for i := 0; i < nc-1; i++ {
+			if width[i] > minCol && (big < 0 || width[i] > width[big]) {
+				big = i
+			}
+		}
+		if big < 0 {
+			break
+		}
+		width[big]--
+		total--
+	}
+	cell := func(s string, w int, last bool) string {
+		if rw(s) > w {
+			if w <= 1 {
+				return "…"
+			}
+			s = string([]rune(s)[:w-1]) + "…"
+		}
+		if last {
+			return s
+		}
+		pad := w - rw(s)
+		if pad < 0 {
+			pad = 0
+		}
+		return s + strings.Repeat(" ", pad) + strings.Repeat(" ", gap)
+	}
+	emit := func(cells []string) {
+		var b strings.Builder
+		b.WriteString(strings.Repeat(" ", indent))
+		for i := 0; i < nc; i++ {
+			c := ""
+			if i < len(cells) {
+				c = cells[i]
+			}
+			b.WriteString(cell(c, width[i], i == nc-1))
+		}
+		fmt.Println(b.String())
+	}
+	emit(headers)
+	for _, r := range rows {
+		emit(r)
+	}
 }
 
 // ==================== text output ====================
 
 func emitText(blobs []blob, cmd string, hadErr bool) int {
+	defer startPager()()
 	for _, b := range blobs {
 		if b.err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", b.label, b.err)
@@ -542,19 +616,18 @@ func emitText(blobs []blob, cmd string, hadErr bool) int {
 		fmt.Println(headerLine(b.label, b.arc))
 		switch cmd {
 		case "info":
-			// header is the whole output
 		case "tree":
 			b.arc.printTree(b.arc.buildGraph(0, map[int]bool{}), 0)
 		case "wiring":
 			printWiringText(b.arc)
-		case "strings":
-			for _, s := range b.arc.collectStrings() {
-				fmt.Printf("%s\t%s\n", s.Source, s.Value)
-			}
 		case "classes":
 			printClassesText(b.arc)
 		case "segues":
-			printSeguesText(b.arc)
+			printNavText(b.arc)
+		case "all":
+			printClassesText(b.arc)
+			printWiringText(b.arc)
+			printNavText(b.arc)
 		}
 	}
 	if hadErr {
@@ -567,24 +640,26 @@ func printWiringText(arc *Archive) {
 	outlets, actions, attrs := splitWiring(arc)
 	if len(outlets)+len(actions) > 0 {
 		fmt.Println("WIRING")
-		fmt.Printf("  %s %s %s %s\n", pad("TYPE", 8), pad("SELECTOR/OUTLET", 34), pad("SOURCE", 30), "DESTINATION")
+		var rows [][]string
 		for _, c := range outlets {
-			fmt.Printf("  %s %s %s %s\n", pad("outlet", 8), pad(c.Name, 34), pad(c.Source, 30), c.Destination)
+			rows = append(rows, []string{"outlet", c.Name, c.Source, c.Destination})
 		}
 		for _, c := range actions {
 			ev := c.Event
 			if ev != "" {
-				ev = " [" + ev + "]"
+				c.Destination += " [" + ev + "]"
 			}
-			fmt.Printf("  %s %s %s %s%s\n", pad("action", 8), pad(c.Name, 34), pad(c.Source, 30), c.Destination, ev)
+			rows = append(rows, []string{"action", c.Name, c.Source, c.Destination})
 		}
+		renderTable([]string{"TYPE", "SELECTOR/OUTLET", "SOURCE", "DESTINATION"}, rows)
 	}
 	if len(attrs) > 0 {
 		fmt.Println("RUNTIME ATTRS")
-		fmt.Printf("  %s %s %s\n", pad("OBJECT", 30), pad("KEYPATH", 24), "VALUE")
+		var rows [][]string
 		for _, a := range attrs {
-			fmt.Printf("  %s %s %s\n", pad(a.Object, 30), pad(a.KeyPath, 24), a.Value)
+			rows = append(rows, []string{a.Object, a.KeyPath, a.Value})
 		}
+		renderTable([]string{"OBJECT", "KEYPATH", "VALUE"}, rows)
 	}
 	if len(outlets)+len(actions) == 0 && len(attrs) == 0 {
 		fmt.Println("(no wiring)")
@@ -593,31 +668,45 @@ func printWiringText(arc *Archive) {
 
 func printClassesText(arc *Archive) {
 	cs := arc.customClasses()
+	fmt.Println("CLASSES")
 	if len(cs) == 0 {
-		fmt.Println("(no custom classes)")
+		fmt.Println("  (none)")
 		return
 	}
-	fmt.Printf("  %s %s %s\n", pad("CLASS", 44), pad("BASE", 24), "SCENE ID")
+	var rows [][]string
 	for _, c := range cs {
-		fmt.Printf("  %s %s %s\n", pad(c.Class, 44), pad(c.Base, 24), c.SceneID)
+		rows = append(rows, []string{c.Class, c.Base, c.SceneID})
 	}
+	renderTable([]string{"CLASS", "BASE", "SCENE ID"}, rows)
 }
 
-func printSeguesText(arc *Archive) {
-	ss := arc.segues()
-	if len(ss) == 0 {
-		fmt.Println("(no segues)")
+func edgeSource(e navEdge) string {
+	if e.SrcID != "" {
+		return e.SrcID
+	}
+	return e.SrcClass
+}
+
+func edgeDest(e navEdge) string {
+	return firstNonEmpty(e.DstID, e.DstClass, "-")
+}
+
+func printNavText(arc *Archive) {
+	edges := arc.navEdges()
+	fmt.Println("NAVIGATION")
+	if len(edges) == 0 {
+		fmt.Println("  (none)")
 		return
 	}
-	fmt.Printf("  %s %s %s %s %s\n", pad("KIND", 12), pad("SOURCE", 36), pad("DESTINATION ID", 36), pad("IDENTIFIER", 14), "SELECTOR")
-	for _, s := range ss {
-		id := s.Identifier
-		if id == "" {
-			id = "-"
-		}
-		fmt.Printf("  %s %s %s %s %s\n", pad(s.Kind, 12), pad(s.SourceClass, 36), pad(s.DestID, 36), pad(id, 14), s.Selector)
-		for k, v := range s.Details {
-			fmt.Printf("    %s = %s\n", pad(k, 46), v)
+	var rows [][]string
+	for _, e := range edges {
+		id := firstNonEmpty(e.Identifier, e.CustomClass, "-")
+		rows = append(rows, []string{e.Kind, edgeSource(e), edgeDest(e), id, e.Selector})
+	}
+	renderTable([]string{"KIND", "SOURCE", "DESTINATION", "IDENTIFIER", "SELECTOR"}, rows)
+	for _, e := range edges {
+		for k, v := range e.Details {
+			fmt.Printf("    %s = %s\n", k, v)
 		}
 	}
 }
@@ -628,10 +717,7 @@ func emitJSON(blobs []blob, cmd string) int {
 	docs := make([]map[string]interface{}, 0, len(blobs))
 	for _, b := range blobs {
 		if b.err != nil {
-			docs = append(docs, map[string]interface{}{
-				"file":  b.label,
-				"error": b.err.Error(),
-			})
+			docs = append(docs, map[string]interface{}{"file": b.label, "error": b.err.Error()})
 			continue
 		}
 		doc := map[string]interface{}{
@@ -655,34 +741,12 @@ func emitJSON(blobs []blob, cmd string) int {
 			if cmd == "wiring" {
 				break
 			}
-			c := b.arc.customClasses()
-			if c == nil {
-				c = []customClass{}
-			}
-			g := b.arc.segues()
-			if g == nil {
-				g = []segue{}
-			}
-			doc["classes"] = c
-			doc["segues"] = g
-		case "strings":
-			s := b.arc.collectStrings()
-			if s == nil {
-				s = []strItem{}
-			}
-			doc["strings"] = s
+			doc["classes"] = nonNilClasses(b.arc)
+			doc["navigation"] = nonNilNav(b.arc)
 		case "classes":
-			c := b.arc.customClasses()
-			if c == nil {
-				c = []customClass{}
-			}
-			doc["classes"] = c
+			doc["classes"] = nonNilClasses(b.arc)
 		case "segues":
-			g := b.arc.segues()
-			if g == nil {
-				g = []segue{}
-			}
-			doc["segues"] = g
+			doc["navigation"] = nonNilNav(b.arc)
 		}
 		docs = append(docs, doc)
 	}
@@ -698,21 +762,60 @@ func emitJSON(blobs []blob, cmd string) int {
 	return 0
 }
 
+func nonNilClasses(a *Archive) []customClass {
+	c := a.customClasses()
+	if c == nil {
+		c = []customClass{}
+	}
+	return c
+}
+func nonNilNav(a *Archive) []navEdge {
+	e := a.navEdges()
+	if e == nil {
+		e = []navEdge{}
+	}
+	return e
+}
+
+// ==================== Mermaid navigation graph ====================
+
+func emitMermaid(blobs []blob) {
+	defer startPager()()
+	fmt.Println("flowchart LR")
+	ids := map[string]string{}
+	node := func(label string) string {
+		if id, ok := ids[label]; ok {
+			return id
+		}
+		id := "n" + strconv.Itoa(len(ids))
+		ids[label] = id
+		safe := strings.ReplaceAll(label, "\"", "'")
+		fmt.Printf("  %s[\"%s\"]\n", id, safe)
+		return id
+	}
+	for _, b := range blobs {
+		if b.arc == nil {
+			continue
+		}
+		for _, e := range b.arc.navEdges() {
+			src := node(edgeSource(e))
+			dst := node(edgeDest(e))
+			lbl := firstNonEmpty(e.Identifier, e.CustomClass, e.Kind)
+			fmt.Printf("  %s -->|%s| %s\n", src, lbl, dst)
+		}
+	}
+}
+
 // ==================== Frida codegen ====================
 
 type fridaHook struct {
 	file, selector, source, dest, event string
 }
 
-// isPlaceholder reports whether a resolved destination label is a storyboard
-// placeholder / proxy whose real class must be inferred.
 func isPlaceholder(s string) bool {
 	return strings.HasSuffix(s, "(proxy)") || strings.Contains(s, "Placeholder")
 }
 
-// resolveImpl picks the implementing class for an action whose destination is a
-// placeholder. Prefers a unique candidate whose base class is a view controller;
-// falls back to a unique candidate overall. Returns "" when ambiguous.
 func resolveImpl(dest string, candidates []customClass) string {
 	if !isPlaceholder(dest) {
 		return dest
@@ -792,7 +895,7 @@ func emitFrida(w io.Writer, blobs []blob) {
 			fmt.Fprintf(w, "//     var C = ObjC.classes[%q];\n", "<CLASS>")
 			fmt.Fprintf(w, "//     if (C && C[%q]) {\n", "- "+h.selector)
 			fmt.Fprintf(w, "//         Interceptor.attach(C[%q].implementation, {\n", "- "+h.selector)
-			fmt.Fprintf(w, "//             onEnter: function (a) { console.log('[+] <CLASS> %s'); }\n", h.selector)
+			fmt.Fprintf(w, "//         onEnter: function (a) { console.log('[+] <CLASS> %s'); }\n", h.selector)
 			fmt.Fprintf(w, "//         });\n")
 			fmt.Fprintf(w, "//     }\n")
 			fmt.Fprintf(w, "// })(); } catch (e) {}\n\n")
