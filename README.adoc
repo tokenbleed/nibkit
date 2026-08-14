@@ -1,5 +1,7 @@
 = nibkit
 
+image:https://github.com/tokenbleed/nibkit/actions/workflows/ci.yml/badge.svg[build status,link=https://github.com/tokenbleed/nibkit/actions/workflows/ci.yml]
+
 Decompiler for compiled iOS/macOS interface files. Parses `.nib` and
 `.storyboardc` files (the format real apps ship), extracts object structure,
 wiring, custom classes, and the navigation graph. Single static Go binary,
