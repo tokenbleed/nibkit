@@ -284,7 +284,7 @@ func parseArgs(args []string) (cli, error) {
 		case "-h", "--help":
 			usage()
 			os.Exit(0)
-		case "-V", "--nib.Version":
+		case "-V", "--version":
 			fmt.Println("nibkit " + nib.Version)
 			os.Exit(0)
 		case "-J", "--json":
@@ -302,6 +302,20 @@ func parseArgs(args []string) (cli, error) {
 	}
 	if len(pos) == 0 {
 		return c, fmt.Errorf("error: input path required")
+	}
+	// exactly one output mode; combos are almost certainly a mistake
+	nmodes := 0
+	if c.jsonOut {
+		nmodes++
+	}
+	if c.fridaOut {
+		nmodes++
+	}
+	if c.mermaidOut {
+		nmodes++
+	}
+	if nmodes > 1 {
+		return c, fmt.Errorf("-J, --frida and --mermaid are mutually exclusive")
 	}
 	if r, ok := realCmd[pos[0]]; ok {
 		c.cmd = r.cmd
@@ -350,7 +364,7 @@ FLAGS
   -J, --json     emit JSON (single object for one blob, array for many)
       --frida    generate Frida hook stubs from @IBAction wiring (wiring only)
       --mermaid  emit the navigation graph as a Mermaid flowchart (segues only)
-  -V, --nib.Version  print nib.Version and exit
+  -V, --version  print version and exit
   -h, --help     show this help
 
 EXAMPLES
