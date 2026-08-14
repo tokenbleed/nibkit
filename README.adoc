@@ -90,9 +90,6 @@ navigation graph, and a macOS system app:
 
 image::demo.gif[demo]
 
-The original asciinema session is attached to the
-https://github.com/tokenbleed/nibkit/releases/tag/v1.3.0[v1.3.0 release].
-
 == Format support
 
 [cols="3,2,5"]
