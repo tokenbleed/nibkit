@@ -28,4 +28,4 @@ jobs:
         with:
           languages: go
       # v3
-      - uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324
+      - uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38
