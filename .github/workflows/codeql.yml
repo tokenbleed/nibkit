@@ -24,7 +24,7 @@ jobs:
         with:
           go-version: stable
       # v3
-      - uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324
+      - uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd
         with:
           languages: go
       # v3
